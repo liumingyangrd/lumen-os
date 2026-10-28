@@ -12,7 +12,7 @@ const ROOT = path.join(__dirname, '..');
 const DIST = path.join(ROOT, 'dist');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 
-const KERNEL_AREA = 0x1000;        // 内核占前 4 KiB，文件系统紧随其后（整张映像须 < 64 KiB）
+const KERNEL_AREA = 0x1000;        // 内核占前 4 KiB（整张映像须 < 64 KiB）
 
 /* ---------- 1. 组装 LMFS 卷 ---------- */
 function buildFs(files) {
@@ -143,19 +143,23 @@ const fsFiles = [
     '\r\n' +
     'Everything here was written for this project: the assembler,\r\n' +
     'the compiler, the kernel, the filesystem, the boot protocol.\r\n', 'utf8') },
-  { name: 'KMAIN.ASM', data: Buffer.from(src, 'utf8') },
   { name: 'HELLO.TXT', data: Buffer.from('hello from the LMFS volume\r\n', 'utf8') }
 ];
 
 const fsImg = buildFs(fsFiles);
 
-const bootBytes = Buffer.alloc(KERNEL_AREA + fsImg.length, 0);
+/* 文件系统：紧跟在内核区之后，固定在 0x8C00（与内核里的常量一致） */
+const FS_AT = 0x8C00;
+const total = FS_AT - 0x7C00 + fsImg.length;
+if (total > 0x10000 - 0x7C00) throw new Error('引导映像 ' + total + ' 字节，超过 64 KiB 边界');
+
+const bootBytes = Buffer.alloc(total, 0);
 Buffer.from(code).copy(bootBytes, 0);
-fsImg.copy(bootBytes, KERNEL_AREA);
+fsImg.copy(bootBytes, FS_AT - 0x7C00);
 
 const iso = buildIso([
   { name: 'README.TXT', data: fsFiles[0].data },
-  { name: 'KMAIN.ASM', data: fsFiles[2].data },
+  { name: 'KMAIN.ASM', data: Buffer.from(src, 'utf8') },
   { name: 'LUMENOS.HTM', data: fs.readFileSync(path.join(DIST, 'LumenOS.html')) }
 ], {
   volumeId: 'LUMEN_OS_X86',

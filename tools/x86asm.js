@@ -85,7 +85,7 @@ function assemble(source) {
     switch (op) {
       case 'db': {
         let n = 0;
-        for (const o of ops) n += o.startsWith('"') || o.startsWith("'") ? o.slice(1, -1).length : 1;
+        for (const o of ops) n += (o.startsWith('"') || o.startsWith("'")) ? Buffer.byteLength(o.slice(1, -1), 'utf8') : 1;
         return n;
       }
       case 'dw': return ops.length * 2;
@@ -105,7 +105,13 @@ function assemble(source) {
         if (op === 'mov' || dst === 'ax') return 3;
         return 4;
       }
-      case 'inc': case 'dec': case 'push': case 'pop': return 1;
+      case 'inc': case 'dec': {
+        const r = ops[0];
+        if (REG16[r] !== undefined) return 1;
+        if (REG8[r] !== undefined) return 2;
+        throw new Error('inc/dec 不支持的寄存器: ' + r);
+      }
+      case 'push': case 'pop': return 1;
       case 'div': return 2;
       case 'int': return 2;
       case 'in': case 'out': return 1;
@@ -114,15 +120,17 @@ function assemble(source) {
       case 'cld': case 'sti': case 'cli': case 'hlt': case 'nop': return 1;
       case 'rep': return 1 + sizeOf(ops[0].toLowerCase(), ops.slice(1).join(','));
       case 'shl': case 'shr': return 2;
-      case 'loop': case 'jmp': return JCC[op] ? 2 : (op === 'jmp' ? 3 : 2);
+      case 'loop': case 'jmp': return JCC[op] ? 4 : (op === 'jmp' ? 3 : 2);
       default:
-        if (JCC[op]) return 2;
+        if (JCC[op]) return 4;
         throw new Error('未知指令: ' + op);
     }
   };
 
   const modrmRR = (reg, rm) => 0xC0 | ((reg & 7) << 3) | (rm & 7);
+  // 绝对寻址 [addr]：ModRM = mod 00 / reg=目标寄存器 / rm=110，再跟 16 位地址
   const dirRef = (addr) => [0x06, addr & 0xFF, (addr >> 8) & 0xFF];
+  const memRef = (reg, addr) => [((reg & 7) << 3) | 0x06, addr & 0xFF, (addr >> 8) & 0xFF];
 
   const secondPass = () => {
     let pc = org;
@@ -165,8 +173,7 @@ function assemble(source) {
       if (op === 'db') {
         for (const o of ops) {
           if (o.startsWith('"') || o.startsWith("'")) {
-            const s = o.slice(1, -1);
-            for (const ch of s) put(ch.charCodeAt(0));
+            for (const byte of Buffer.from(o.slice(1, -1), 'utf8')) put(byte);
           } else put(parseNum(o, labels));
         }
         continue;
@@ -194,21 +201,24 @@ function assemble(source) {
           else put(0x8B, (REG16[dst] << 3) | rm);
         } else if (dMem) {
           const addr = parseNum(dst.slice(1, -1), labels);
-          if (REG16[src] !== undefined) { put(0x89); put(...dirRef(addr)); }
-          else if (REG8[src] !== undefined) { put(0x88); put(...dirRef(addr)); }
+          if (REG16[src] !== undefined) { put(0x89); put(...memRef(REG16[src], addr)); }
+          else if (REG8[src] !== undefined) { put(0x88); put(...memRef(REG8[src], addr)); }
           else { put(0xC7); put(...dirRef(addr)); put16(parseNum(src, labels)); }
         } else if (sMem) {
           const addr = parseNum(src.slice(1, -1), labels);
-          if (REG8[dst] !== undefined) { put(0x8A); put(...dirRef(addr)); }
-          else { put(0x8B); put(...dirRef(addr)); }
+          if (REG8[dst] !== undefined) { put(0x8A); put(...memRef(REG8[dst], addr)); }
+          else if (REG16[dst] !== undefined) { put(0x8B); put(...memRef(REG16[dst], addr)); }
+          else throw new Error('mov 源无法识别: ' + src);
         } else if (REG16[dst] !== undefined && REG16[src] !== undefined) {
           put(0x89, modrmRR(REG16[src], REG16[dst]));
         } else if (REG8[dst] !== undefined && REG8[src] !== undefined) {
           put(0x88, modrmRR(REG8[src], REG8[dst]));
         } else if (REG8[dst] !== undefined) {
           put(0xB0 + REG8[dst], parseNum(src, labels));
-        } else {
+        } else if (REG16[dst] !== undefined) {
           put(0xB8 + REG16[dst]); put16(parseNum(src, labels));
+        } else {
+          throw new Error('mov 目标无法识别: ' + dst);
         }
         continue;
       }
@@ -249,9 +259,19 @@ function assemble(source) {
       }
 
       switch (op) {
-        case 'inc': put(0x40 + REG16[ops[0]]); break;
+        case 'inc': {
+          if (REG16[ops[0]] !== undefined) put(0x40 + REG16[ops[0]]);
+          else if (REG8[ops[0]] !== undefined) put(0xFE, modrmRR(0, REG8[ops[0]]));
+          else throw new Error('inc 不支持的寄存器: ' + ops[0]);
+          break;
+        }
         case 'div': put(0xF7, modrmRR(6, REG16[ops[0]])); break;
-        case 'dec': put(0x48 + REG16[ops[0]]); break;
+        case 'dec': {
+          if (REG16[ops[0]] !== undefined) put(0x48 + REG16[ops[0]]);
+          else if (REG8[ops[0]] !== undefined) put(0xFE, modrmRR(1, REG8[ops[0]]));
+          else throw new Error('dec 不支持的寄存器: ' + ops[0]);
+          break;
+        }
         case 'push': {
           const PUSHSEG = { es: 0x06, cs: 0x0E, ss: 0x16, ds: 0x1E };
           if (PUSHSEG[ops[0]] !== undefined) put(PUSHSEG[ops[0]]);
@@ -293,7 +313,7 @@ function assemble(source) {
         case 'shl': put(0xD1, modrmRR(4, REG16[ops[0]])); break;
         case 'shr': put(0xD1, modrmRR(5, REG16[ops[0]])); break;
         default:
-          if (JCC[op]) { put(JCC[op]); rel8(ops[0]); }
+          if (JCC[op]) { put(0x0F, JCC[op] + 0x10); rel16(ops[0]); }
           else throw new Error('未知指令: ' + op);
       }
 

@@ -92,6 +92,9 @@ runcmd:
     mov di, c_reboot
     call streq
     jz h_reboot
+    mov di, c_zh
+    call streq
+    jz h_zh
 
     call try_cat
     jz .out
@@ -127,6 +130,36 @@ h_reboot:
     ret
 
 ; ---------- ls：列出根目录 ----------
+; ---------- 中文界面：文本模式屏幕放不下汉字，直接送到串口 ----------
+h_zh:
+    mov si, txt_zh1
+    call scstr
+    mov si, txt_zh2
+    call scstr
+    mov si, txt_zh3
+    call scstr
+    mov si, txt_zh4
+    call scstr
+    mov si, msg_zh_note
+    call scstr
+    ret
+
+; 把 si 处的字符串逐字节送到串口（不进屏幕）
+scstr:
+    push ax
+    push si
+.l:
+    mov al, [si]
+    test al, al
+    jz .d
+    call sc
+    inc si
+    jmp .l
+.d:
+    pop si
+    pop ax
+    ret
+
 h_ls:
     mov si, 0x9000
     mov cx, 64
@@ -562,6 +595,7 @@ c_ver:    db "ver", 0
 c_clear:  db "clear", 0
 c_ls:     db "ls", 0
 c_reboot: db "reboot", 0
+c_zh:    db "zh", 0
 
 prompt:   db "lumen-x86> ", 0
 msg_nf:   db "unknown command: ", 0
@@ -602,6 +636,12 @@ txt_ver:
     db "  debug     COM1 mirror at 115200 8N1", 13, 10
     db "  sibling   LUX-32 build, same project, custom ISA", 13, 10
     db 13, 10, 0
+
+txt_zh1: db 13, 10, "Lumen OS 1.0  ·  x86 原生版", 13, 10
+txt_zh2: db "架构   x86 16 位实模式，无模拟层", 13, 10
+txt_zh3: db "文件   LMFS 卷随引导映像一同载入", 13, 10
+txt_zh4: db "串口   COM1 115200，画面同步镜像", 13, 10
+msg_zh_note: db "（屏幕是 VGA 文本模式，只有 256 个字形；中文走串口）", 13, 10, 0
 
 txt_reboot:
     db "rebooting...", 13, 10, 0
