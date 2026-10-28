@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""从内核源码里提取用到的汉字，渲染成 16x16 点阵字库。
+"""从内核源码里提取用到的汉字，渲染成点阵字库。
 
 输出 dist/font.bin：
     u16  asciiCount         ASCII 字形数（固定 95，0x20..0x7E）
     u16  cjkCount           汉字/全角字形数
-    u8   ascii[95][16]      ASCII 8x16 点阵
+    u8   ascii[95][16]      ASCII 8x16 点阵（每行 1 字节，8 像素宽）
     u16  codepoints[N]      升序码点表（二分查找用）
-    u8   glyphs[N][32]      汉字 16x16 点阵
+    u8   glyphs[N][32]      汉字 16x16 点阵（每行 2 字节）
 
 点阵按行存储，每字节高位在左。
 """
@@ -25,11 +25,29 @@ SIZE = 16
 
 
 def collect_chars():
-    text = open(SRC, encoding='utf-8').read()
+    """收集会在屏幕上出现的非 ASCII 字符。
+
+    只看内核里的 db 字符串（用户可见的文本），不看注释 —— 注释里的中文
+    不需要字模，能把字库从 16KB 压到几 KB。
+    """
+    import re
     seen = {}
-    for ch in text:
-        if ord(ch) > 0x7E:
-            seen[ch] = True
+    src_dir = os.path.join(ROOT, 'src', 'x86')
+    for name in sorted(os.listdir(src_dir)):
+        if not name.endswith('.s'):
+            continue
+        text = open(os.path.join(src_dir, name), encoding='utf-8').read()
+        # 去掉整行注释
+        code_lines = []
+        for line in text.split('\n'):
+            idx = line.find(';')
+            code_lines.append(line if idx < 0 else line[:idx])
+        code = '\n'.join(code_lines)
+        # 只取 db "..." 里的内容
+        for m in re.finditer(r'db\s+"([^"]*)"', code):
+            for ch in m.group(1):
+                if ord(ch) > 0x7E:
+                    seen[ch] = True
     return sorted(seen.keys(), key=ord)
 
 

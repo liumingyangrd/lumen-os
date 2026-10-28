@@ -1,18 +1,38 @@
 'use strict';
-// 构建 Lumen OS 的 x86 原生可引导光盘
-//   - 内核（汇编）+ LMFS 文件系统 → 一张引导映像
-//   - El Torito 引导记录（光盘）
-//   - 混合 MBR（U 盘 / 硬盘启动）
+// 构建 Lumen OS 的 x86 原生可引导介质（图形版）
+//
+// 产出三样东西：
+//   1. dist/LumenOS-x86.iso      —— 可在 VMware / 真实电脑启动的光盘镜像
+//   2. dist/LumenOS-x86-usb.img  —— 可 dd 到 U 盘启动的磁盘镜像
+//   3. 混合 MBR —— 写进 U 盘映像的第 0 扇区
+//
+// 引导结构（stage1 + payload 两阶段）：
+//   磁盘映像第 0 扇区   stage1（引导扇区，512 字节）
+//   磁盘映像第 1 扇区   填充
+//   磁盘映像第 2 扇区起 payload：8 字节头（'LMN1' + 长度）+ 内核
+//
+// 光盘用 El Torito 硬盘仿真（介质类型 0x04）把整张映像当成一块硬盘，
+// 于是 stage1 可以用 INT 13h AH=42h 把 payload 读上来。
+//
+// 内核在内存里的位置：
+//   0x8000   内核代码与数据（字库以 db 指令编在里面）
+//   0xBC00   LMFS 卷
+
 const fs = require('fs');
 const path = require('path');
 const { assemble } = require('./x86asm.js');
-const { buildIso, SECTOR } = require('./iso.js');
+const { buildIso } = require('./iso.js');
 
 const ROOT = path.join(__dirname, '..');
 const DIST = path.join(ROOT, 'dist');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+const NL = String.fromCharCode(10);
 
-const KERNEL_AREA = 0x1000;        // 内核占前 4 KiB（整张映像须 < 64 KiB）
+const KERNEL_BASE = 0x8000;        // 内核在内存中的地址
+const FS_ADDR = 0xBC00;            // LMFS 卷在内存中的地址
+const FS_OFFSET = FS_ADDR - KERNEL_BASE;
+const SCRATCH = 0x9000;            // stage1 的读盘缓冲区
+const PAYLOAD_LBA = 2;             // payload 在磁盘映像里的起始扇区
 
 /* ---------- 1. 组装 LMFS 卷 ---------- */
 function buildFs(files) {
@@ -45,136 +65,160 @@ function buildFs(files) {
   return img;
 }
 
-/* ---------- 2. 混合 MBR（U 盘启动） ---------- */
-function buildHybridMbr(imageSize, bootLba2048, bootBytes) {
-  const mbr = Buffer.alloc(512, 0);
-  const code = [];
-  const labels = {};
-  const b = (...v) => code.push(...v);
-  const lab = (n) => { labels[n] = code.length; };
-
-  b(0xFA);                       // cli
-  b(0x31, 0xC0);                 // xor ax,ax
-  b(0x8E, 0xD8);                 // mov ds,ax
-  b(0x8E, 0xC0);                 // mov es,ax
-  b(0x8E, 0xD0);                 // mov ss,ax
-  b(0xBC, 0x00, 0x7C);           // mov sp,0x7C00
-  b(0xFB);                       // sti
-
-  // 磁盘地址包放在 0x0600，避免被读入的映像覆盖
-  const cnt = Math.ceil(bootBytes / 512);
-  const lba = (bootLba2048 * SECTOR) / 512;
-  const putW = (addr, v) => { b(0xC7, 0x06, addr & 0xFF, (addr >> 8) & 0xFF, v & 0xFF, (v >> 8) & 0xFF); };
-  putW(0x0600, 0x0010);
-  putW(0x0602, cnt);
-  putW(0x0604, 0x7C00);
-  putW(0x0606, 0x0000);
-  putW(0x0608, lba & 0xFFFF);
-  putW(0x060A, (lba >> 16) & 0xFFFF);
-
-  b(0xBE, 0x00, 0x06);           // mov si,0x0600
-  b(0xB4, 0x42);                 // mov ah,0x42
-  b(0xCD, 0x13);                 // int 13h
-  b(0x72, 0x00);                 // jc fail（回填）
-  const jcPos = code.length - 2;
-
-  b(0xB8, 0x00, 0x7C);           // mov ax,0x7C00
-  b(0x50);                       // push ax
-  b(0xC3);                       // ret → 跳到 0x7C00
-
-  lab('fail');
-  b(0xB4, 0x0E);                 // mov ah,0x0E
-  const siPos = code.length + 1;
-  b(0xBE, 0x00, 0x00);           // mov si,msg（回填）
-  b(0xAC);                       // lodsb
-  b(0x84, 0xC0);                 // test al,al
-  b(0x74, 0x04);                 // jz halt
-  b(0xCD, 0x10);                 // int 10h
-  b(0xEB, 0xF8);                 // jmp lodsb
-  lab('halt');
-  b(0xEB, 0xFE);                 // jmp $
-
-  const msgAt = code.length;
-  for (const ch of 'Lumen OS: boot image not readable\r\n') b(ch.charCodeAt(0));
-  b(0);
-
-  code[jcPos + 1] = (labels.fail - (jcPos + 2)) & 0xFF;
-  const msgAddr = 0x7C00 + msgAt;
-  code[siPos] = msgAddr & 0xFF;
-  code[siPos + 1] = (msgAddr >> 8) & 0xFF;
-
-  Buffer.from(code).copy(mbr, 0);
-
-  const totalSectors = Math.floor(imageSize / 512);
+/* ---------- 2. 在引导扇区末尾补上 MBR 分区表与 0x55AA ----------
+   光盘的 El Torito 引导不检查这些，但 U 盘启动时 BIOS 需要它们。 */
+function addMbrSignature(sector, payloadSectors) {
   const pt = 0x1BE;
-  mbr[pt + 0] = 0x80;
-  mbr[pt + 4] = 0x0C;
-  mbr[pt + 5] = 0xFE;
-  mbr[pt + 6] = 0xFF;
-  mbr[pt + 7] = 0xFF;
-  mbr.writeUInt32LE(0, pt + 8);
-  mbr.writeUInt32LE(totalSectors, pt + 12);
-  mbr[0x1FE] = 0x55;
-  mbr[0x1FF] = 0xAA;
-  return mbr;
+  sector[pt + 0] = 0x00;            // 不活动分区（活动分区标记给 0x80 的那个也行）
+  sector[pt + 1] = 0x01;            // CHS 起始
+  sector[pt + 2] = 0x01;
+  sector[pt + 3] = 0x00;
+  sector[pt + 4] = 0x06;            // FAT16 类型
+  sector[pt + 5] = 0xFE;
+  sector[pt + 6] = 0xFF;
+  sector[pt + 7] = 0xFF;
+  sector.writeUInt32LE(PAYLOAD_LBA, pt + 8);
+  sector.writeUInt32LE(payloadSectors, pt + 12);
+  sector[0x1FE] = 0x55;
+  sector[0x1FF] = 0xAA;
 }
 
 /* ---------- 主流程 ---------- */
-const src = read('src/x86/kmain.s');
+const kernelSrc = read('src/x86/kgfx.s');
+
+/* 字库：先跑 fontgen.py，按当前源码里实际用到的字符重新生成 */
+require('child_process').execFileSync('python', [path.join(ROOT, 'tools', 'fontgen.py')], { stdio: 'inherit' });
+const font = fs.readFileSync(path.join(DIST, 'font.bin'));
+const asciiCount = font.readUInt16LE(0);
+const cjkCount = font.readUInt16LE(2);
+const asciiAt = 4;
+const mapAt = asciiAt + asciiCount * 16;
+const glyAt = mapAt + cjkCount * 2;
+
+/* 把字库编成 db 数据，追加到内核源码末尾。
+   fonthead 的三个字段是"相对内核起点的偏移"，内核运行时加 0x8000。 */
+const dbBytes = (buf) => {
+  const out = [];
+  for (let i = 0; i < buf.length; i += 16) {
+    out.push('    db ' + Array.from(buf.slice(i, i + 16)).join(','));
+  }
+  return out.join(NL);
+};
+
+const headLen = 12;
+const asciiOff = headLen;
+const mapOff = asciiOff + asciiCount * 16;
+const glyOff = mapOff + cjkCount * 2;
+
+const fontBlob = Buffer.alloc(glyOff + cjkCount * 32);
+fontBlob.writeUInt16LE(asciiCount, 0);
+fontBlob.writeUInt16LE(cjkCount, 2);
+fontBlob.writeUInt16LE(asciiOff, 4);
+fontBlob.writeUInt16LE(mapOff, 6);
+fontBlob.writeUInt16LE(glyOff, 8);
+// font.bin 自带 4 字节头（asciiCount/cjkCount），字模从偏移 4 开始
+font.copy(fontBlob, asciiOff, asciiAt);
+
+const src = kernelSrc + NL + NL +
+  '; ---------- 字库（构建时生成）----------' + NL +
+  'fonthead:' + NL + dbBytes(fontBlob) + NL;
+
 const { code, labels } = assemble(src);
+console.log('  [调试] fonthead 标签 = 0x' + (labels.fonthead || 0).toString(16) +
+            ', ascigly 变量 = 0x' + (labels.ascigly || 0).toString(16));
+if (code.length > FS_OFFSET) {
+  throw new Error('内核 ' + code.length + ' 字节，会盖住 LMFS 卷（上限 ' + FS_OFFSET + ' 字节）');
+}
 
 const fsFiles = [
   { name: 'README.TXT', data: Buffer.from(
-    'Lumen OS 1.0 - x86 native build\r\n' +
-    '\r\n' +
-    'This disc boots a kernel written in x86 machine code. No emulation.\r\n' +
-    'Try: help / ver / ls / cat README.TXT / clear / reboot\r\n' +
-    '\r\n' +
-    'The LUX-32 original (same project, custom instruction set) is in\r\n' +
-    'LUMENOS.HTM on this disc - open it in any browser.\r\n', 'utf8') },
+    'Lumen OS 1.0 - x86 native build, 320x200 graphics' + NL.repeat(0) +
+    '==================================================' + NL +
+    NL +
+    'This disc boots a kernel written in x86 machine code. No emulation.' + NL +
+    'No third-party kernel, no third-party bootloader, no third-party assembler.' + NL +
+    NL +
+    'Display   VGA mode 13h (320x200x256), linear framebuffer' + NL +
+    'Text      ASCII 8x16 (1 column), CJK 16x16 (2 columns)' + NL +
+    'Font      16x16 CJK subset generated by tools/fontgen.py' + NL +
+    'Assembler tools/x86asm.js (written for this project)' + NL +
+    'Serial    COM1 115200 8N1, every character mirrored' + NL +
+    'Files     LMFS volume loaded with the boot image' + NL +
+    'Boot      El Torito hard-disk emulation on CD, raw image on USB' + NL +
+    NL +
+    'Try: help / ver / ls / cat FILE / clear / reboot' + NL +
+    NL +
+    'The LUX-32 original (same project, custom instruction set) is in' + NL +
+    'LUMENOS.HTM on this disc - open it in any browser.' + NL, 'utf8') },
   { name: 'MOTD.TXT', data: Buffer.from(
-    'LUMEN OS\r\n' +
-    '========\r\n' +
-    '\r\n' +
-    'instruction set   LUX-32 (custom)  |  x86 (this build)\r\n' +
-    'kernel            Lumen\r\n' +
-    'filesystem        LMFS, 512 byte blocks, 64 directory entries\r\n' +
-    'boot              El Torito on CD, hybrid MBR on USB\r\n' +
-    '\r\n' +
-    'Everything here was written for this project: the assembler,\r\n' +
-    'the compiler, the kernel, the filesystem, the boot protocol.\r\n', 'utf8') },
-  { name: 'HELLO.TXT', data: Buffer.from('hello from the LMFS volume\r\n', 'utf8') }
+    'Lumen OS' + NL +
+    '========' + NL +
+    NL +
+    'instruction set   LUX-32 (custom)  |  x86 (this build)' + NL +
+    'kernel            Lumen' + NL +
+    'assembler         tools/x86asm.js (written for this project)' + NL +
+    'filesystem        LMFS, 512 byte blocks, 64 directory entries' + NL +
+    'font              16x16 CJK subset, generated by tools/fontgen.py' + NL +
+    'boot              El Torito hard-disk emulation, two-stage loader' + NL +
+    NL +
+    'Everything here was written for this project: the assembler,' + NL +
+    'the compiler, the kernel, the filesystem, the boot protocol.' + NL, 'utf8') },
+  { name: 'HELLO.TXT', data: Buffer.from('hello from the LMFS volume' + NL, 'utf8') }
 ];
 
 const fsImg = buildFs(fsFiles);
 
-/* 文件系统：紧跟在内核区之后，固定在 0x8C00（与内核里的常量一致） */
-const FS_AT = 0x8C00;
-const total = FS_AT - 0x7C00 + fsImg.length;
-if (total > 0x10000 - 0x7C00) throw new Error('引导映像 ' + total + ' 字节，超过 64 KiB 边界');
+/* ---------- 内核映像 ---------- */
+const kernelImage = Buffer.alloc(FS_OFFSET + fsImg.length, 0);
+Buffer.from(code).copy(kernelImage, 0);
+fsImg.copy(kernelImage, FS_OFFSET);
 
-const bootBytes = Buffer.alloc(total, 0);
-Buffer.from(code).copy(bootBytes, 0);
-fsImg.copy(bootBytes, FS_AT - 0x7C00);
+/* ---------- payload：8 字节头 + 内核映像 ----------
+   头 = 'LMN1' + 内核长度（2 字节，小端）+ 保留（2 字节）
+   stage1 靠魔数定位 payload，再按长度把内核搬到 0x8000。 */
+const payloadHeader = Buffer.alloc(8);
+payloadHeader.write('LMN1', 0, 'ascii');
+payloadHeader.writeUInt16LE(kernelImage.length & 0xFFFF, 4);
+payloadHeader.writeUInt16LE(kernelImage.length >>> 16, 6);
+const payload = Buffer.concat([payloadHeader, kernelImage]);
+const payloadSectors = Math.ceil(payload.length / 512);
 
+/* ---------- stage1 ---------- */
+let stage1 = read('src/x86/stage1.s');
+// 多读几个扇区，容忍不同 BIOS 的 LBA 基准差异
+stage1 = stage1.replace(/^PAYLOAD_SECTORS = .*$/m, 'PAYLOAD_SECTORS = ' + (payloadSectors + 4));
+const stage1Asm = assemble(stage1);
+if (stage1Asm.code.length > 512) throw new Error('stage1 超过一个扇区: ' + stage1Asm.code.length + ' 字节');
+const stage1Sector = Buffer.alloc(512, 0);
+Buffer.from(stage1Asm.code).copy(stage1Sector);
+addMbrSignature(stage1Sector, payloadSectors);
+
+/* ---------- 磁盘映像：stage1 + 填充 + payload ---------- */
+const diskImage = Buffer.alloc((PAYLOAD_LBA + payloadSectors + 4) * 512, 0);
+stage1Sector.copy(diskImage, 0);
+payload.copy(diskImage, PAYLOAD_LBA * 512);
+
+/* ---------- ISO ---------- */
 const iso = buildIso([
   { name: 'README.TXT', data: fsFiles[0].data },
-  { name: 'KMAIN.ASM', data: Buffer.from(src, 'utf8') },
+  { name: 'KGFX.ASM', data: Buffer.from(kernelSrc, 'utf8') },
   { name: 'LUMENOS.HTM', data: fs.readFileSync(path.join(DIST, 'LumenOS.html')) }
 ], {
   volumeId: 'LUMEN_OS_X86',
   date: new Date(),
-  boot: { image: bootBytes }
+  // 硬盘仿真：整张引导映像被当成一块硬盘，stage1 才能用 AH=42h 读后面的内容
+  boot: { image: diskImage, mediaType: 0x04 }
 });
 
-const mbr = buildHybridMbr(iso.image.length, iso.bootLba, bootBytes.length);
-mbr.copy(iso.image, 0);
-
 fs.writeFileSync(path.join(DIST, 'LumenOS-x86.iso'), iso.image);
+fs.writeFileSync(path.join(DIST, 'LumenOS-x86-usb.img'), diskImage);
 
-console.log('  源码        ' + src.split('\n').length + ' 行汇编');
-console.log('  内核        ' + code.length + ' B');
+console.log('  源码        ' + kernelSrc.split(NL).length + ' 行汇编');
+console.log('  内核        ' + code.length + ' B（含字库）');
+console.log('  字库        ' + font.length + ' B (ASCII ' + asciiCount + ', 汉字 ' + cjkCount + ')');
 console.log('  文件系统    ' + fsImg.length + ' B (' + (fsImg.length / 512) + ' 块, ' + fsFiles.length + ' 个文件)');
-console.log('  引导映像    ' + bootBytes.length + ' B (' + Math.ceil(bootBytes.length / 512) + ' 扇区)');
-console.log('  光盘        ' + iso.image.length + ' B -> dist/LumenOS-x86.iso');
-console.log('  混合 MBR    已写入，可 dd 到 U 盘启动');
+console.log('  内核映像    ' + kernelImage.length + ' B');
+console.log('  payload     ' + payload.length + ' B (' + payloadSectors + ' 扇区, 磁盘第 ' + PAYLOAD_LBA + ' 扇区)');
+console.log('  stage1      512 B（带 MBR 签名，可直接做 U 盘第 0 扇区）');
+console.log('  磁盘映像    ' + diskImage.length + ' B -> dist/LumenOS-x86-usb.img');
+console.log('  光盘        ' + iso.image.length + ' B -> dist/LumenOS-x86.iso（El Torito 硬盘仿真）');

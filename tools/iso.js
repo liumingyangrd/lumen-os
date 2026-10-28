@@ -58,7 +58,8 @@ function ident(name) {
 
 /**
  * files: [{ name: 'README.TXT', data: Buffer }]
- * opts.boot: { image: Buffer }   —— 2048 字节 x86 引导映像（El Torito 无仿真）
+ * opts.boot: { image: Buffer }   —— El Torito 引导映像（通常是 512 字节的 stage1）
+ * opts.raw:  Buffer              —— 额外的原始扇区（两阶段引导的内核 payload）
  */
 function buildIso(files, opts) {
   const o = opts || {};
@@ -78,6 +79,12 @@ function buildIso(files, opts) {
   const bootImgSectors = boot ? Math.ceil(boot.image.length / SECTOR) : 0;
   const BOOTIMG = boot ? sec : -1;         // 引导映像
   if (boot) sec += bootImgSectors;
+
+  // 额外的原始扇区（两阶段引导的 payload），排在文件之前
+  const raw = o.raw || null;
+  const RAW_START = sec;
+  if (raw) sec += Math.ceil(raw.length / SECTOR);
+
   const FILE_START = sec;
 
   /* ---- 文件排布 ---- */
@@ -135,6 +142,7 @@ function buildIso(files, opts) {
   pvd.writeUInt32BE(MPATH, 148);
   pvd.writeUInt32BE(0, 152);
   dirRecord(Buffer.from([0x00]), DIR, SECTOR, 0x02, when).copy(pvd, 156);
+  if (boot) bothU32(BRVD).copy(pvd, 71);        // 引导记录卷描述符的位置
   pvd.write(volId.padEnd(128, ' '), 190, 'ascii');
   pvd.write('LUMEN OS PROJECT'.padEnd(128, ' '), 318, 'ascii');
   pvd.write('LUX-32 VM / lcc toolchain'.padEnd(128, ' '), 446, 'ascii');
@@ -173,10 +181,13 @@ function buildIso(files, opts) {
     for (let i = 0; i < 32; i += 2) sum += catalog.readUInt16LE(i);
     catalog.writeUInt16LE((0x10000 - (sum % 0x10000)) % 0x10000, 28);
 
-    // 默认条目（32 字节）：无仿真方式，加载到 0000:7C00
+    // 默认条目（32 字节）：引导介质类型可配，加载到 0000:7C00
+    //   0x00 = 无仿真（BIOS 只把第一个扇区读进内存，后面的要自己读）
+    //   0x04 = 硬盘仿真（整张映像被当成一块硬盘，INT 13h 能读到整个映像）
     const e = 32;
+    const mediaType = (o.boot && o.boot.mediaType !== undefined) ? o.boot.mediaType : 0x00;
     catalog.writeUInt8(0x88, e + 0);                     // 可启动
-    catalog.writeUInt8(0x00, e + 1);                     // 引导介质：无仿真
+    catalog.writeUInt8(mediaType, e + 1);                // 引导介质类型
     catalog.writeUInt16LE(0x0000, e + 2);                // 加载段：0 表示 0x7C00
     catalog.writeUInt8(0x00, e + 4);                     // 系统类型
     catalog.writeUInt8(0x00, e + 5);
@@ -200,9 +211,11 @@ function buildIso(files, opts) {
   pathRecM.copy(img, MPATH * SECTOR);
   dirBuf.copy(img, DIR * SECTOR);
   if (boot) boot.image.copy(img, BOOTIMG * SECTOR);
+  if (raw) raw.copy(img, RAW_START * SECTOR);
   for (const f of placed) f.data.copy(img, f.extent * SECTOR);
 
-  return { image: img, sectors: totalSectors, files: placed, boot: !!boot, bootLba: BOOTIMG };
+  return { image: img, sectors: totalSectors, files: placed, boot: !!boot,
+           bootLba: BOOTIMG, rawStart: raw ? RAW_START : -1 };
 }
 
 module.exports = { buildIso, SECTOR };
