@@ -18,6 +18,7 @@ WIN_Y = 24
 WIN_W = 300
 WIN_H = 144
 STATUS_Y = 180
+CUR_H = 13                        ; 光标高度（像素）
 
 ; ---------- 调色板 ----------
 C_BLACK = 0
@@ -46,11 +47,19 @@ start:
     call draw_title
     call draw_window
     call draw_status
+    call mouse_init
+
+    ; 初始光标位置 + 画出来
+    mov word [mx], 150
+    mov word [my], 92
+    call cursor_draw
 
     mov si, msg_boot
     call sc_puts
 
 main_loop:
+    call mouse_poll
+    call key_poll
     call draw_clock
     hlt
     jmp main_loop
@@ -305,6 +314,10 @@ draw_clock:
     mov ah, 0x02
     int 0x1A
     jc .fail
+    ; VMware 的 BIOS INT 1A 会破坏 ES！重设到显存段，否则下面的
+    ; put_char 写到垃圾段里，什么都看不见。
+    mov ax, 0xA000
+    mov es, ax
 
     mov al, ch
     call bcd2bin
@@ -330,8 +343,11 @@ draw_clock:
     call put_char
     mov al, [second]
     call put_2digit
+
     ret
 .fail:
+    mov al, 'F'
+    call sc_putc
     ret
 
 ; ================================================================
@@ -599,7 +615,8 @@ put_char:
     mov bl, al
     mov bh, 0
     shl bx, 4
-    add bx, [ascigly]
+    add bx, fonthead        ; 与 draw_text 相同的常量寻址（[ascigly] 间接读在此环境中不可靠）
+    add bx, 12
     mov si, bx
     call draw_ascii
     add word [curx], 8
@@ -706,6 +723,323 @@ sc_putc:
     ret
 
 ; ================================================================
+;  PS/2 鼠标（轮询，无中断）
+; ================================================================
+
+; 等控制器输入缓冲空（可以往 64h 写）
+kwait_w:
+    push cx
+    push ax
+    mov cx, 60000
+.w:
+    mov dx, 0x64
+    in al, dx
+    test al, 2
+    jz .done
+    loop .w
+.done:
+    pop ax
+    pop cx
+    ret
+
+; 等输出缓冲有数据（可以从 60h 读）。CF=1 超时
+kwait_r:
+    push cx
+    mov cx, 60000
+.w:
+    mov dx, 0x64
+    in al, dx
+    test al, 1
+    jnz .ok
+    loop .w
+    stc
+    pop cx
+    ret
+.ok:
+    clc
+    pop cx
+    ret
+
+; 把 AL 发给辅助设备（鼠标），并吃掉 ACK
+aux_send:
+    push ax
+    call kwait_w
+    mov dx, 0x64
+    mov al, 0xD4
+    out dx, al
+    pop ax
+    push ax
+    call kwait_w
+    mov dx, 0x60
+    out dx, al
+    call kwait_r
+    mov dx, 0x60
+    in al, dx
+    pop ax
+    ret
+
+mouse_init:
+    ; 允许辅助端口
+    call kwait_w
+    mov dx, 0x64
+    mov al, 0xA8
+    out dx, al
+    ; 读控制器命令字节，清掉 IRQ12 使能位（我们轮询，不要中断）
+    call kwait_w
+    mov dx, 0x64
+    mov al, 0x20
+    out dx, al
+    call kwait_r
+    mov dx, 0x60
+    in al, dx
+    and al, 0xFD
+    mov [cmdbyte], al
+    ; 写回命令字节
+    call kwait_w
+    mov dx, 0x64
+    mov al, 0x60
+    out dx, al
+    call kwait_w
+    mov dx, 0x60
+    mov al, [cmdbyte]
+    out dx, al
+    ; 鼠标：设默认值、10 次/秒采样、允许上报
+    mov al, 0xF6
+    call aux_send
+    mov al, 0xF3
+    call aux_send
+    mov al, 10
+    call aux_send
+    mov al, 0xF4
+    call aux_send
+    ret
+
+; 主循环里轮询：有鼠标数据就按字节收，凑满 3 字节处理一包
+mouse_poll:
+    mov cx, 8                 ; 一帧最多消化 8 字节
+.loop:
+    mov dx, 0x64
+    in al, dx
+    test al, 1
+    jz .done
+    mov dx, 0x60
+    in al, dx
+    mov bx, [mphase]
+    add bx, mpkt
+    mov [bx], al
+    add word [mphase], 1
+    cmp word [mphase], 3
+    jne .next
+    mov word [mphase], 0
+    call mouse_packet
+.next:
+    loop .loop
+.done:
+    ret
+
+; 键盘轮询：方向键移动光标，空格切换按下状态
+; （鼠标之外的第二输入路径，VMware 窗口和真机都可用）
+key_poll:
+    mov ah, 0x01
+    int 0x16
+    jz .done                 ; 无按键
+    mov ah, 0x00
+    int 0x16                 ; AH=扫描码
+
+    cmp ah, 0x48             ; 上
+    jne .n1
+    sub word [my], 8
+    jmp .move
+.n1:
+    cmp ah, 0x50             ; 下
+    jne .n2
+    add word [my], 8
+    jmp .move
+.n2:
+    cmp ah, 0x4B             ; 左
+    jne .n3
+    sub word [mx], 8
+    jmp .move
+.n3:
+    cmp ah, 0x4D             ; 右
+    jne .n4
+    add word [mx], 8
+    jmp .move
+.n4:
+    cmp ah, 0x39             ; 空格 = 左键
+    jne .done
+    xor byte [mbtn], 1
+    call draw_btn
+    jmp .done
+
+.move:
+    call cursor_hide
+    call clamp_cursor
+    call cursor_draw
+.done:
+    ret
+
+; 把 mx/my 钳到屏幕内
+clamp_cursor:
+    cmp word [mx], 0
+    jge .x1
+    mov word [mx], 0
+.x1:
+    cmp word [mx], 312
+    jle .x2
+    mov word [mx], 312
+.x2:
+    cmp word [my], 0
+    jge .y1
+    mov word [my], 0
+.y1:
+    cmp word [my], 185
+    jle .y2
+    mov word [my], 185
+.y2:
+    ret
+
+; 处理一个 3 字节包：[0]=状态 [1]=X 增量 [2]=Y 增量
+mouse_packet:
+    mov al, [mpkt]
+    test al, 0xC0             ; 溢出位有效就丢包
+    jnz .skip
+    call cursor_hide          ; 先在旧位置擦掉光标
+
+    mov al, [mpkt+1]
+    cbw                       ; AX = 有符号 X 增量
+    add [mx], ax
+    mov al, [mpkt+2]
+    cbw
+    sub [my], ax              ; PS/2 的 Y 正方向朝上，屏幕朝下
+
+    call clamp_cursor
+
+    ; 按钮状态 → 状态栏指示灯
+    mov al, [mpkt]
+    and al, 7
+    mov [mbtn], al
+    call draw_btn
+
+    call cursor_draw
+.skip:
+    ret
+
+; 状态栏右侧的三个按钮指示灯（左/中/右）
+draw_btn:
+    push ax
+    push cx
+    push dx
+    push di
+    mov ax, 0xA000
+    mov es, ax
+    mov di, (STATUS_Y + 5) * SCRW + 292
+    mov dl, [mbtn]
+    mov cx, 3
+.b:
+    push cx
+    push di
+    push ax
+    mov al, C_DKGRAY
+    test dl, 1
+    jz .off
+    mov al, C_WHITE
+.off:
+    mov cx, 5                 ; 宽
+    mov dx, 5                 ; 高
+    call fill_rect
+    pop ax
+    pop di
+    add di, 8
+    shr dl, 1
+    pop cx
+    loop .b
+    pop di
+    pop dx
+    pop cx
+    pop ax
+    ret
+
+; 画光标：把背景存进 cursav，再描轮廓/填白
+cursor_draw:
+    push ax
+    push cx
+    push dx
+    push si
+    push di
+    mov ax, 0xA000
+    mov es, ax
+    mov ax, [my]
+    mov dx, SCRW
+    mul dx
+    add ax, [mx]
+    mov di, ax
+    mov si, cur_gly
+    mov bx, cursav
+    mov cx, CUR_H
+.row:
+    push cx
+    push di
+    mov ah, [si]              ; 轮廓掩码
+    mov al, [si+1]            ; 填充掩码
+    mov cx, 8
+.px:
+    mov dl, [es:di]           ; 读背景像素
+    mov [bx], dl              ; 存进保存缓冲
+    inc bx
+    mov dh, dl                ; 默认 = 背景原色
+    test ah, 0x80
+    jz .t1
+    mov dh, 0x00              ; 轮廓：黑
+    jmp .set
+.t1:
+    test al, 0x80
+    jz .set
+    mov dh, 0x0F              ; 填充：白
+.set:
+    mov [es:di], dh
+    inc di
+    shl ah, 1
+    shl al, 1
+    loop .px
+    pop di
+    add di, SCRW
+    add si, 2
+    pop cx
+    loop .row
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop ax
+    ret
+
+; 擦光标：把 cursav 写回屏幕
+cursor_hide:
+    push ax
+    push cx
+    push dx
+    push si
+    push di
+    mov ax, 0xA000
+    mov es, ax
+    mov ax, [my]
+    mov dx, SCRW
+    mul dx
+    add ax, [mx]
+    mov di, ax
+    mov si, cursav
+    mov cx, CUR_H * 8
+    cld
+    rep movsb
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop ax
+    ret
+
+; ================================================================
 ;  数据
 ; ================================================================
 ascicount: dw 0
@@ -722,6 +1056,32 @@ bgcol:     db C_BLACK
 hour:      db 0
 minute:    db 0
 second:    db 0
+
+; ---------- 鼠标 ----------
+mx:        dw 150
+my:        dw 92
+mbtn:      db 0
+mphase:    dw 0
+mpkt:      db 0, 0, 0
+cmdbyte:   db 0
+cursav:    resb CUR_H * 8      ; 光标下面的背景
+
+; 光标字模：13 行 x 8 像素，每行两个掩码
+;   第 1 字节 = 黑色轮廓，第 2 字节 = 白色填充，两者都是 0 的像素透出背景
+cur_gly:
+    db 0x80,0x00
+    db 0xC0,0x00
+    db 0xA0,0x40
+    db 0x90,0x60
+    db 0x88,0x70
+    db 0x84,0x78
+    db 0x82,0x7C
+    db 0x81,0x7E
+    db 0x83,0x7C
+    db 0x92,0x6C
+    db 0xA4,0x4A
+    db 0xCA,0x04
+    db 0x0C,0x00
 
 ; 找不到字模时用的实心方块 16x16
 boxglyph:

@@ -64,11 +64,20 @@ execSync('sleep ' + wait);
 execSync('sleep 2');
 
 // 抓屏（VNC 端口可能要等一会儿才起来，重试几次）
+// mousePath（第 5 个参数，"x,y x,y ..."）给了就注入指针移动并连拍
 const outPath = path.isAbsolute(out) ? out : path.join(ROOT, out);
 let shotOk = false;
 for (let attempt = 0; attempt < 6 && !shotOk; attempt++) {
   try {
-    const r = execFileSync('node', [path.join(__dirname, 'vncshot.js'), outPath], { encoding: 'utf8' });
+    let r;
+    if (process.argv[5]) {
+      const outs = outPath.replace(/\.png$/i, '') + '-1.png ' +
+                   outPath.replace(/\.png$/i, '') + '-2.png';
+      r = execFileSync('node', [path.join(__dirname, 'vncmouse.js')]
+            .concat(outs.split(' ')), { encoding: 'utf8' });
+    } else {
+      r = execFileSync('node', [path.join(__dirname, 'vncshot.js'), outPath], { encoding: 'utf8' });
+    }
     process.stdout.write(r);
     shotOk = true;
   } catch (e) {

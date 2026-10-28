@@ -278,10 +278,10 @@ function assemble(source) {
         return 3;
       }
       case 'ret': case 'lodsb': case 'stosb': case 'movsb': case 'movsw':
-      case 'cld': case 'sti': case 'cli': case 'hlt': case 'nop':
+      case 'cld': case 'sti': case 'cli': case 'hlt': case 'nop': case 'cbw':
       case 'clc': case 'stc': case 'cmc': case 'std': case 'cld': return 1;
       case 'rep': return 1 + sizeOf(ops[0].toLowerCase(), ops.slice(1).join(','));
-      case 'shl': case 'shr': {
+      case 'shl': case 'shr': case 'rol': case 'ror': {
         // shl r/m, imm8 → D0/D1 /4 ib（3 字节）；不带立即数则是移 1 位（2 字节）
         const hasImm = ops.length > 1;          // 第二个操作数是立即数
         return hasImm ? 3 : 2;
@@ -555,7 +555,12 @@ function assemble(source) {
           else throw new Error('inc 不支持的寄存器: ' + ops[0]);
           break;
         }
-        case 'div': put(0xF7, modrmRR(6, REG16[ops[0]])); break;
+        case 'div': case 'idiv': {
+          const t = ops[0];
+          if (REG16[t] !== undefined) { put(0xF7, modrmRR(6, REG16[t])); break; }
+          if (REG8[t] !== undefined) { put(0xF6, modrmRR(6, REG8[t])); break; }
+          throw new Error('div 不支持的寄存器: ' + t);
+        }
         case 'mul': {
           if (REG16[ops[0]] !== undefined) { put(0xF7, modrmRR(4, REG16[ops[0]])); break; }
           if (REG8[ops[0]] !== undefined) { put(0xF6, modrmRR(4, REG8[ops[0]])); break; }
@@ -620,6 +625,7 @@ function assemble(source) {
           break;
         }
         case 'cld': put(0xFC); break;
+        case 'cbw': put(0x98); break;
         case 'clc': put(0xF8); break;
         case 'stc': put(0xF9); break;
         case 'cmc': put(0xF5); break;
@@ -628,7 +634,7 @@ function assemble(source) {
         case 'cli': put(0xFA); break;
         case 'hlt': put(0xF4); break;
         case 'nop': put(0x90); break;
-        case 'shl': case 'shr': case 'sar': {
+        case 'shl': case 'shr': case 'sar': case 'rol': case 'ror': {
           // 移位指令的编码：
           //   不带立即数      D0/D1 /n r/m        —— 移 1 位，没有 imm 字节
           //   带立即数        C0/C1 /n r/m, imm8  —— 移 imm 位
@@ -636,7 +642,7 @@ function assemble(source) {
           const t = ops[0];
           const hasImm = ops.length > 1;
           const imm = hasImm ? parseNum(ops[1], labels) : null;
-          const digit = op === 'shl' ? 4 : op === 'shr' ? 5 : 7;
+          const digit = op === 'shl' ? 4 : op === 'shr' ? 5 : op === 'sar' ? 7 : op === 'rol' ? 0 : 1;
           if (REG16[t] !== undefined) {
             if (hasImm) { put(0xC1, modrmRR(digit, REG16[t])); put(imm & 0xFF); }
             else put(0xD1, modrmRR(digit, REG16[t]));
