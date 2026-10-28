@@ -1,0 +1,77 @@
+/* calc —— 递归下降表达式求值器 */
+char expr[128];
+int pos;
+
+int skipsp() {
+  while (expr[pos] == 32) pos = pos + 1;
+  return 0;
+}
+
+int parse_expr() {
+  int v = parse_term();
+  for (;;) {
+    skipsp();
+    if (expr[pos] == 43) { pos = pos + 1; v = v + parse_term(); }
+    else if (expr[pos] == 45) { pos = pos + 1; v = v - parse_term(); }
+    else break;
+  }
+  return v;
+}
+
+int parse_term() {
+  int v = parse_atom();
+  for (;;) {
+    skipsp();
+    if (expr[pos] == 42) { pos = pos + 1; v = v * parse_atom(); }
+    else if (expr[pos] == 47) {
+      pos = pos + 1;
+      int d = parse_atom();
+      if (d == 0) { v = 0; }
+      else v = v / d;
+    } else if (expr[pos] == 37) {
+      pos = pos + 1;
+      int m = parse_atom();
+      if (m == 0) { v = 0; }
+      else v = v % m;
+    } else break;
+  }
+  return v;
+}
+
+int parse_atom() {
+  int v = 0;
+  int neg = 0;
+  skipsp();
+  if (expr[pos] == 40) {
+    pos = pos + 1;
+    v = parse_expr();
+    skipsp();
+    if (expr[pos] == 41) pos = pos + 1;
+    return v;
+  }
+  if (expr[pos] == 45) { neg = 1; pos = pos + 1; }
+  while (isdigit(expr[pos])) {
+    v = v * 10 + (expr[pos] - 48);
+    pos = pos + 1;
+  }
+  if (neg) v = -v;
+  return v;
+}
+
+int main() {
+  char line[128];
+  setattr(0x0B);
+  puts("\n  Lumen 计算器\n");
+  setattr(0x08);
+  puts("  支持 + - * / % 和括号, 空行退出\n\n");
+  setattr(0x0A);
+  for (;;) {
+    setattr(0x0B); puts("  calc> "); setattr(0x0A);
+    readline(line, 128);
+    if (line[0] == 0) break;
+    strcpy(expr, line);
+    pos = 0;
+    printf("  = %d\n", parse_expr(), 0, 0);
+  }
+  return 0;
+}

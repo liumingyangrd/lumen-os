@@ -1,0 +1,9 @@
+/* hello —— 最小 LMX 程序, 用来验证加载器与系统调用 */
+int main() {
+  setattr(0x0B);
+  puts("\n  你好, 这里是 Lumen。\n");
+  setattr(0x0A);
+  printf("  我是一个独立的 LMX 可执行文件, pid=%d\n", getpid(), 0, 0);
+  puts("  我在一个自己设计的 CPU 上, 通过自己设计的内核打印这行字。\n\n");
+  return 0;
+}

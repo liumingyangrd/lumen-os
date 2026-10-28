@@ -1,0 +1,12 @@
+/* date —— 从 RTC 读取时间 */
+char buf[64];
+int main() {
+  rtc(buf);
+  setattr(0x0B);
+  puts("\n  ");
+  setattr(0x0F);
+  puts(buf);
+  setattr(0x0A);
+  printf("\n  开机已 %d 个时钟滴答 (%d 秒)\n\n", ticks(), ticks() / 100, 0);
+  return 0;
+}

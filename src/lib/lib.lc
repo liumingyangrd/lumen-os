@@ -1,0 +1,210 @@
+/* ============================================================
+ *  Lumen 用户库 (静态链接进每个程序)
+ *  系统调用封装 + 字符串 + 格式化输出
+ * ============================================================ */
+
+int __cstart() {
+  int r = main();
+  __sys(0, r, 0, 0, 0);
+  return 0;
+}
+
+void exit(int c) { __sys(0, c, 0, 0, 0); }
+
+int u8adv;
+int u8_at(char *s, int i) {
+  int b = s[i] & 0xff;
+  int a = s[i + 1] & 0x3f;
+  int c2 = s[i + 2] & 0x3f;
+  int d2 = s[i + 3] & 0x3f;
+  if (b < 0x80) { u8adv = 1; return b; }
+  if ((b & 0xE0) == 0xC0) { u8adv = 2; return ((b & 0x1F) << 6) | a; }
+  if ((b & 0xF0) == 0xE0) { u8adv = 3; return ((b & 0x0F) << 12) | (a << 6) | c2; }
+  u8adv = 4;
+  return ((b & 0x07) << 18) | (a << 12) | (c2 << 6) | d2;
+}
+
+void putcp(int cp) { __sys(22, cp, 0, 0, 0); }
+
+int cp_wide(int cp) {
+  if (cp >= 0x1100 && cp <= 0x115F) return 1;
+  if (cp >= 0x2E80 && cp <= 0xA4CF) return 1;
+  if (cp >= 0xAC00 && cp <= 0xD7A3) return 1;
+  if (cp >= 0xF900 && cp <= 0xFAFF) return 1;
+  if (cp >= 0xFE30 && cp <= 0xFE4F) return 1;
+  if (cp >= 0xFF00 && cp <= 0xFF60) return 1;
+  if (cp >= 0xFFE0 && cp <= 0xFFE6) return 1;
+  return 0;
+}
+void putc(int c) { __sys(1, c, 0, 0, 0); }
+void puts(char *s) { __sys(2, s, 0, 0, 0); }
+int getchar() { return __sys(3, 0, 0, 0, 0); }
+int ticks() { return __sys(5, 0, 0, 0, 0); }
+int yield() { return __sys(15, 0, 0, 0, 0); }
+void clear() { __sys(17, 0, 0, 0, 0); }
+void setattr(int a) { __sys(20, a, 0, 0, 0); }
+int getpid() { return __sys(12, 0, 0, 0, 0); }
+int getppid() { return __sys(21, 0, 0, 0, 0); }
+int spawn(char *name, char *args) { return __sys(10, name, args, 0, 0); }
+int wait(int pid) { return __sys(11, pid, 0, 0, 0); }
+int fs_list(char *buf, int max) { return __sys(6, buf, max, 0, 0); }
+int fs_read(char *name, char *buf, int max) { return __sys(7, name, buf, max, 0); }
+int fs_write(char *name, char *buf, int len) { return __sys(8, name, buf, len, 0); }
+int fs_del(char *name) { return __sys(9, name, 0, 0, 0); }
+int ps_list(char *buf) { return __sys(13, buf, 0, 0, 0); }
+int meminfo(char *buf) { return __sys(14, buf, 0, 0, 0); }
+int rtc(char *buf) { return __sys(16, buf, 0, 0, 0); }
+int getargs(char *buf, int max) { return __sys(19, buf, max, 0, 0); }
+void reboot() { __sys(18, 0, 0, 0, 0); }
+
+void sleep(int ms) {
+  int t = ticks() + ms / 10 + 1;
+  while (ticks() < t) yield();
+}
+
+int getkey() {
+  int c = 0;
+  for (;;) {
+    c = getchar();
+    if (c) return c;
+    sleep(6);
+  }
+}
+
+int readline(char *buf, int max) {
+  int n = 0;
+  for (;;) {
+    int c = getkey();
+    if (c == 10) { buf[n] = 0; puts("\n"); return n; }
+    if (c == 8) {
+      if (n > 0) { n = n - 1; putc(8); putc(32); putc(8); }
+    } else if (c >= 32 && c < 127) {
+      if (n < max - 1) { buf[n] = c; n = n + 1; putc(c); }
+    }
+  }
+}
+
+/* ---------------- 字符串 ---------------- */
+int strlen(char *s) { int i = 0; while (s[i]) i = i + 1; return i; }
+
+int strcmp(char *a, char *b) {
+  int i = 0;
+  while (a[i] && b[i]) { if (a[i] != b[i]) return a[i] - b[i]; i = i + 1; }
+  return a[i] - b[i];
+}
+
+int strncmp(char *a, char *b, int n) {
+  int i = 0;
+  while (i < n && a[i] && b[i]) { if (a[i] != b[i]) return a[i] - b[i]; i = i + 1; }
+  if (i == n) return 0;
+  return a[i] - b[i];
+}
+
+void strcpy(char *d, char *s) {
+  int i = 0;
+  while (s[i]) { d[i] = s[i]; i = i + 1; }
+  d[i] = 0;
+}
+
+void strncpy(char *d, char *s, int n) {
+  int i = 0;
+  while (i < n - 1 && s[i]) { d[i] = s[i]; i = i + 1; }
+  d[i] = 0;
+}
+
+void strcat(char *d, char *s) {
+  int i = strlen(d);
+  int j = 0;
+  while (s[j]) { d[i] = s[j]; i = i + 1; j = j + 1; }
+  d[i] = 0;
+}
+
+int atoi(char *s) {
+  int v = 0;
+  int i = 0;
+  int neg = 0;
+  if (s[0] == 45) { neg = 1; i = 1; }
+  while (s[i] >= 48 && s[i] <= 57) { v = v * 10 + (s[i] - 48); i = i + 1; }
+  if (neg) v = -v;
+  return v;
+}
+
+int isdigit(int c) { return c >= 48 && c <= 57; }
+int isalpha(int c) { return (c >= 65 && c <= 90) || (c >= 97 && c <= 122); }
+
+int rd32(char *p, int off) {
+  int a = p[off];
+  int b = p[off + 1];
+  int c = p[off + 2];
+  int d = p[off + 3];
+  return a | (b << 8) | (c << 16) | (d << 24);
+}
+
+void wr32(char *p, int off, int v) {
+  p[off] = v & 0xff;
+  p[off + 1] = (v >> 8) & 0xff;
+  p[off + 2] = (v >> 16) & 0xff;
+  p[off + 3] = (v >> 24) & 0xff;
+}
+
+/* ---------------- 格式化 ---------------- */
+void print_int(int v) {
+  char b[16];
+  int i = 0;
+  int neg = 0;
+  if (v == 0) { putc(48); return; }
+  if (v < 0) { neg = 1; v = -v; }
+  while (v > 0) { b[i] = 48 + (v % 10); i = i + 1; v = v / 10; }
+  if (neg) putc(45);
+  while (i > 0) { i = i - 1; putc(b[i]); }
+}
+
+void print_hex(int v) {
+  char b[16];
+  int i = 0;
+  int d = 0;
+  if (v == 0) { putc(48); return; }
+  while (v > 0 && i < 8) {
+    d = v & 15;
+    if (d < 10) b[i] = 48 + d;
+    else b[i] = 87 + d;
+    i = i + 1;
+    v = v >> 4;
+  }
+  while (i > 0) { i = i - 1; putc(b[i]); }
+}
+
+void printf(char *fmt, int a, int b, int c) {
+  int args[3];
+  int ai = 0;
+  int i = 0;
+  args[0] = a; args[1] = b; args[2] = c;
+  while (fmt[i]) {
+    if (fmt[i] == 37) {
+      i = i + 1;
+      if (fmt[i] == 100) { print_int(args[ai]); ai = ai + 1; }
+      else if (fmt[i] == 120) { print_hex(args[ai]); ai = ai + 1; }
+      else if (fmt[i] == 115) { puts(mkptr(args[ai])); ai = ai + 1; }
+      else if (fmt[i] == 99) { putc(args[ai] & 0xff); ai = ai + 1; }
+      else if (fmt[i] == 37) putc(37);
+      i = i + 1;
+    } else {
+      int cp = u8_at(fmt, i);
+      i = i + u8adv;
+      putcp(cp);
+    }
+  }
+}
+
+void println(char *s) { puts(s); puts("\n"); }
+
+void printn(char *s, int n) {
+  int i = 0;
+  while (i < n) {
+    int cp = u8_at(s, i);
+    i = i + u8adv;
+    putcp(cp);
+  }
+}
+
+int mkptr(int a) { return a; }

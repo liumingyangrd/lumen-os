@@ -1,0 +1,10 @@
+/* mem —— 内存布局 */
+char buf[1024];
+int main() {
+  meminfo(buf);
+  setattr(0x0B);
+  puts("\n  内存布局\n");
+  setattr(0x0A);
+  puts(buf);
+  return 0;
+}

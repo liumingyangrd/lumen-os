@@ -1,0 +1,10 @@
+/* ps —— 进程列表 */
+char buf[1024];
+int main() {
+  ps_list(buf);
+  setattr(0x0B);
+  puts("\n  任务表 (1=就绪 2=运行 3=等待 4=退出)\n");
+  setattr(0x0A);
+  puts(buf);
+  return 0;
+}

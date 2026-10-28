@@ -1,0 +1,28 @@
+/* ls —— 列出 LMFS 根目录 */
+char buf[1536];
+
+int main() {
+  int n = fs_list(buf, 1500);
+  int i = 0;
+  int k = 0;
+  int len = 0;
+  char *r;
+  setattr(0x08);
+  printf("  共 %d 个文件\n", n, 0, 0);
+  setattr(0x0A);
+  while (i < n) {
+    r = buf + i * 48;
+    len = strlen(r);
+    setattr(0x0F);
+    puts(r);
+    setattr(0x0A);
+    k = len;
+    while (k < 18) { putc(32); k = k + 1; }
+    setattr(0x08);
+    print_int(rd32(r, 40));
+    puts(" 字节\n");
+    setattr(0x0A);
+    i = i + 1;
+  }
+  return 0;
+}

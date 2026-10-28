@@ -1,0 +1,38 @@
+/* write —— 创建/覆盖文件: write <名字> <内容> */
+char args[128];
+char name[64];
+
+int main() {
+  int i = 0;
+  int j = 0;
+  int n = 0;
+  getargs(args, 128);
+  if (args[0] == 0) {
+    puts("  用法: write <文件名> <内容>\n");
+    return 1;
+  }
+  while (args[i] && args[i] != 32) {
+    name[j] = args[i];
+    j = j + 1;
+    i = i + 1;
+  }
+  name[j] = 0;
+  while (args[i] == 32) i = i + 1;
+  n = strlen(args + i);
+  if (n == 0) {
+    setattr(0x0C);
+    puts("  没有内容\n");
+    setattr(0x0A);
+    return 1;
+  }
+  if (fs_write(name, args + i, n) < 0) {
+    setattr(0x0C);
+    puts("  写入失败\n");
+    setattr(0x0A);
+    return 1;
+  }
+  setattr(0x0B);
+  printf("  已写入 %s (%d 字节)\n", name, n, 0);
+  setattr(0x0A);
+  return 0;
+}

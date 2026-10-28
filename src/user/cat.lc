@@ -1,0 +1,25 @@
+/* cat —— 显示文件内容 */
+char args[128];
+char buf[8192];
+
+int main() {
+  int n = 0;
+  int i = 0;
+  getargs(args, 128);
+  if (args[0] == 0) {
+    setattr(0x0C);
+    puts("  用法: cat <文件名>\n");
+    setattr(0x0A);
+    return 1;
+  }
+  n = fs_read(args, buf, 8192);
+  if (n < 0) {
+    setattr(0x0C);
+    printf("  cat: %s: 文件不存在\n", args, 0, 0);
+    setattr(0x0A);
+    return 1;
+  }
+  printn(buf, n);
+  puts("\n");
+  return 0;
+}

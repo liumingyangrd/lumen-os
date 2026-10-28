@@ -1,0 +1,152 @@
+/* snake —— 直接在文本显存上运行的贪吃蛇 */
+char *vram;
+int body[220];
+int blen;
+int hx;
+int hy;
+int dx;
+int dy;
+int fx;
+int fy;
+int over;
+int score;
+char sbuf[16];
+
+void cell(int x, int y, int ch, int at) {
+  int o = (y * 80 + x) * 8;
+  if (o >= 0 && o < 16000) {
+    wr32(vram, o, ch);
+    wr32(vram, o + 4, at);
+  }
+}
+
+void btext(int x, int y, char *s, int at) {
+  int i = 0;
+  int w = 1;
+  while (s[i]) {
+    int cp = u8_at(s, i);
+    i = i + u8adv;
+    w = 1;
+    if (cp_wide(cp)) w = 2;
+    cell(x, y, cp, at);
+    if (w == 2) wr32(vram, (y * 80 + x + 1) * 8, 0xFFFF);
+    x = x + w;
+  }
+}
+
+void itoa10(int v, char *b) {
+  char t[16];
+  int i = 0;
+  int j = 0;
+  if (v == 0) { b[0] = 48; b[1] = 0; return; }
+  while (v > 0) { t[i] = 48 + (v % 10); i = i + 1; v = v / 10; }
+  while (i > 0) { i = i - 1; b[j] = t[i]; j = j + 1; }
+  b[j] = 0;
+}
+
+void draw_box() {
+  int i = 0;
+  while (i < 80) { cell(i, 1, 45, 0x08); cell(i, 22, 45, 0x08); i = i + 1; }
+  i = 0;
+  while (i < 25) { cell(0, i, 124, 0x08); cell(79, i, 124, 0x08); i = i + 1; }
+}
+
+void food() {
+  int t = ticks();
+  fx = 2 + (t * 37 + score * 7) % 75;
+  fy = 3 + (t * 17 + score * 3) % 18;
+}
+
+void render() {
+  int i = 0;
+  int x = 0;
+  int y = 2;
+  int bx = 0;
+  int by = 0;
+  while (y < 22) {
+    x = 1;
+    while (x < 79) { cell(x, y, 32, 0x08); x = x + 1; }
+    y = y + 1;
+  }
+  cell(fx, fy, 42, 0x0C);
+  i = blen - 1;
+  while (i >= 0) {
+    bx = body[i] / 100;
+    by = body[i] % 100;
+    if (i == 0) cell(bx, by, 64, 0x0E);
+    else cell(bx, by, 111, 0x0A);
+    i = i - 1;
+  }
+  btext(2, 0, " LUMEN SNAKE", 0x0E);
+  btext(30, 0, "方向键移动   ESC 退出   得分", 0x08);
+  itoa10(score, sbuf);
+  btext(64, 0, sbuf, 0x0F);
+}
+
+void step() {
+  int nx = hx + dx;
+  int ny = hy + dy;
+  int i = 0;
+  if (nx <= 0 || nx >= 79 || ny <= 1 || ny >= 22) { over = 1; return; }
+  while (i < blen - 1) {
+    if (body[i] / 100 == nx && body[i] % 100 == ny) { over = 1; return; }
+    i = i + 1;
+  }
+  i = blen - 1;
+  while (i > 0) { body[i] = body[i - 1]; i = i - 1; }
+  body[0] = nx * 100 + ny;
+  hx = nx;
+  hy = ny;
+  if (nx == fx && ny == fy) {
+    if (blen < 200) blen = blen + 1;
+    body[blen - 1] = body[blen - 2];
+    score = score + 10;
+    food();
+  }
+  render();
+}
+
+int main() {
+  int k = 0;
+  int next = 0;
+  int speed = 10;
+  vram = mkptr(0xB8000);
+  clear();
+  draw_box();
+  hx = 40; hy = 12; dx = 1; dy = 0;
+  blen = 4;
+  body[0] = 40 * 100 + 12;
+  body[1] = 39 * 100 + 12;
+  body[2] = 38 * 100 + 12;
+  body[3] = 37 * 100 + 12;
+  score = 0;
+  over = 0;
+  food();
+  render();
+  next = ticks();
+  while (over == 0) {
+    k = getchar();
+    if (k == 129 && dy == 0) { dx = 0; dy = -1; }
+    else if (k == 130 && dy == 0) { dx = 0; dy = 1; }
+    else if (k == 131 && dx == 0) { dx = -1; dy = 0; }
+    else if (k == 132 && dx == 0) { dx = 1; dy = 0; }
+    else if (k == 27) break;
+    if (ticks() >= next) {
+      next = ticks() + speed;
+      step();
+    }
+    sleep(2);
+  }
+  btext(28, 12, "  游戏结束  ", 0x0C);
+  btext(28, 13, "  得分:", 0x0F);
+  itoa10(score, sbuf);
+  btext(35, 13, sbuf, 0x0F);
+  btext(24, 15, "  按任意键返回 shell  ", 0x08);
+  for (;;) {
+    k = getchar();
+    if (k) break;
+    sleep(5);
+  }
+  clear();
+  return 0;
+}

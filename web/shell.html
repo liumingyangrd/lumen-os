@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lumen OS · LUX-32</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: radial-gradient(1100px 560px at 18% -12%, #ffffff 0%, #e9edf4 55%, #dde4ee 100%);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    color: #1b2230;
+    display: flex; align-items: center; justify-content: center;
+    padding: 22px;
+  }
+  .rig {
+    width: min(1200px, 100%);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    grid-template-rows: auto 1fr;
+    gap: 14px 16px;
+  }
+  /* ---------- 顶栏 ---------- */
+  .bar {
+    grid-column: 1 / -1;
+    display: flex; align-items: center; justify-content: space-between;
+    background: linear-gradient(180deg, #202838, #171d29);
+    border-radius: 14px;
+    padding: 12px 18px;
+    box-shadow: 0 10px 26px rgba(20,30,50,.18), inset 0 1px 0 rgba(255,255,255,.08);
+    color: #e8eef8;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .logo {
+    width: 34px; height: 34px; border-radius: 10px;
+    background: linear-gradient(145deg, #6df29a, #26b8c4);
+    display: grid; place-items: center;
+    color: #0a0c0e; font-weight: 800; font-size: 17px;
+    box-shadow: 0 0 16px rgba(109,242,154,.35);
+  }
+  .brand h1 { margin: 0; font-size: 16px; letter-spacing: .14em; font-weight: 700; }
+  .brand h1 span { color: #6df29a; margin-left: 3px; }
+  .brand p { margin: 2px 0 0; font-size: 11px; color: #8fa0b8; letter-spacing: .06em; }
+  .actions { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+  .led { width: 8px; height: 8px; border-radius: 50%; background: #6df29a; box-shadow: 0 0 10px #6df29a; }
+  .led.idle { background: #ffe066; box-shadow: 0 0 10px #ffe066; }
+  .led.off { background: #5c6673; box-shadow: none; }
+  #pwr { color: #8fa0b8; letter-spacing: .16em; font-size: 10px; min-width: 62px; }
+  #uptime { color: #6df29a; font-variant-numeric: tabular-nums; font-size: 11px; }
+  .actions button {
+    appearance: none; border: 1px solid rgba(255,255,255,.14);
+    background: rgba(255,255,255,.06); color: #dbe6f5;
+    padding: 6px 12px; border-radius: 8px; font-size: 12px; cursor: pointer;
+    transition: .15s;
+  }
+  .actions button:hover { background: rgba(109,242,154,.16); border-color: rgba(109,242,154,.4); color: #fff; }
+
+  /* ---------- 屏幕 ---------- */
+  .crt { min-width: 0; }
+  .bezel {
+    position: relative;
+    background: linear-gradient(170deg, #2a3242, #131923 60%, #0d1119);
+    border-radius: 18px;
+    padding: 16px;
+    box-shadow: 0 24px 50px rgba(18,26,40,.28), inset 0 1px 0 rgba(255,255,255,.1);
+  }
+  .screen {
+    position: relative;
+    background: #0a0c0e;
+    border-radius: 8px;
+    padding: 14px 16px;
+    font-family: "Cascadia Mono", "Consolas", "SFMono-Regular", "Menlo", monospace;
+    font-size: 15px;
+    line-height: 1.16;
+    letter-spacing: 0;
+    overflow: hidden;
+    box-shadow: inset 0 0 40px rgba(0,0,0,.9), inset 0 0 3px rgba(109,242,154,.25);
+  }
+  .row { white-space: pre; height: 17.4px; }
+  .cur { background: #6df29a; color: #0a0c0e; }
+  .w2 { display: inline-block; width: 2ch; text-align: center; text-indent: 0; }
+  .glass {
+    position: absolute; inset: 16px;
+    border-radius: 8px; pointer-events: none;
+    background:
+      repeating-linear-gradient(180deg, rgba(0,0,0,.22) 0 1px, transparent 1px 3px),
+      radial-gradient(120% 90% at 50% 0%, rgba(109,242,154,.06), transparent 60%);
+    mix-blend-mode: screen;
+  }
+  .hint {
+    margin-top: 10px; text-align: center;
+    font-size: 11px; color: #7b879b; letter-spacing: .04em;
+  }
+
+  /* ---------- 侧面板 ---------- */
+  .panel { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .card {
+    background: #fff;
+    border-radius: 14px;
+    padding: 12px 14px 13px;
+    box-shadow: 0 6px 18px rgba(25,35,55,.07), inset 0 0 0 1px rgba(20,30,50,.05);
+  }
+  .card h2 {
+    margin: 0 0 8px; font-size: 10px; letter-spacing: .18em;
+    color: #8b97a9; text-transform: uppercase; font-weight: 700;
+  }
+  .kvrow, .taskrow, .filerow {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 11.5px; padding: 2.5px 0; gap: 8px;
+  }
+  .kvrow span { color: #8b97a9; }
+  .kvrow b { font-family: "Cascadia Mono", Consolas, monospace; font-weight: 600; color: #1b2230; font-variant-numeric: tabular-nums; }
+  .taskrow b { font-family: Consolas, monospace; color: #2b4bd8; width: 22px; }
+  .taskrow span { flex: 1; color: #2a3444; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .taskrow i { font-style: normal; font-size: 10px; color: #97a3b5; }
+  .taskrow.on { background: rgba(109,242,154,.16); border-radius: 6px; padding-left: 4px; padding-right: 4px; }
+  .filerow span { font-family: Consolas, monospace; color: #2a3444; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .filerow i { font-style: normal; font-size: 10px; color: #97a3b5; font-variant-numeric: tabular-nums; }
+  .dim { color: #97a3b5; font-size: 11px; }
+
+  @media (max-width: 980px) {
+    .rig { grid-template-columns: 1fr; }
+    .panel { flex-direction: row; flex-wrap: wrap; }
+    .card { flex: 1 1 200px; }
+  }
+</style>
+</head>
+<body>
+<div class="rig">
+  <header class="bar">
+    <div class="brand">
+      <div class="logo">◈</div>
+      <div>
+        <h1>LUMEN<span>OS</span></h1>
+        <p>LUX-32 自研指令集 · 自研内核 · 与 Linux 无关</p>
+      </div>
+    </div>
+    <div class="actions">
+      <span class="led" id="led"></span>
+      <span id="pwr">RUNNING</span>
+      <span id="uptime">0s</span>
+      <button id="btnPause">暂停</button>
+      <button id="btnReset">重启</button>
+    </div>
+  </header>
+
+  <section class="crt">
+    <div class="bezel">
+      <div class="screen" id="screen"></div>
+      <div class="glass"></div>
+    </div>
+    <div class="hint">直接打字即可 · snake 用方向键 · ESC 退出程序 · 输入 help 查看命令</div>
+  </section>
+
+  <aside class="panel">
+    <div class="card"><h2>CPU · LUX-32</h2><div id="pCpu"></div></div>
+    <div class="card"><h2>任务</h2><div id="pTask"></div></div>
+    <div class="card"><h2>磁盘 LMFS</h2><div id="pFs"></div></div>
+  </aside>
+</div>
+
+<script>/*__VM_JS__*/</script>
+<script>
+  window.__LUMEN_IMAGE__ = "__IMAGE_B64__";
+  window.__LUMEN_SYMS__ = __SYMS__;
+</script>
+<script>/*__APP_JS__*/</script>
+</body>
+</html>

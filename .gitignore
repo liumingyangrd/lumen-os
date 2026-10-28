@@ -1,0 +1,11 @@
+node_modules/
+*.log
+*.vmem
+*.vmsd
+*.vmxf
+*.scoreboard
+nvram
+vmware/
+dist/kernel.debug.s
+dist/syms.json
+tests/*.s

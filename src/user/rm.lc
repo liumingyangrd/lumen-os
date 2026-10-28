@@ -1,0 +1,17 @@
+/* rm —— 删除文件 */
+char args[128];
+int main() {
+  getargs(args, 128);
+  if (args[0] == 0) {
+    puts("  用法: rm <文件名>\n");
+    return 1;
+  }
+  if (fs_del(args) < 0) {
+    setattr(0x0C);
+    printf("  rm: %s: 没有这个文件\n", args, 0, 0);
+    setattr(0x0A);
+    return 1;
+  }
+  printf("  已删除 %s\n", args, 0, 0);
+  return 0;
+}
