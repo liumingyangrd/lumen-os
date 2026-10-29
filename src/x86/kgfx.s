@@ -854,34 +854,45 @@ key_poll:
     mov ah, 0x00
     int 0x16                 ; AH=扫描码
 
-    cmp ah, 0x48             ; 上
-    jne .n1
-    sub word [my], 8
-    jmp .move
-.n1:
-    cmp ah, 0x50             ; 下
-    jne .n2
-    add word [my], 8
-    jmp .move
-.n2:
-    cmp ah, 0x4B             ; 左
-    jne .n3
-    sub word [mx], 8
-    jmp .move
-.n3:
-    cmp ah, 0x4D             ; 右
-    jne .n4
-    add word [mx], 8
-    jmp .move
-.n4:
     cmp ah, 0x39             ; 空格 = 左键
-    jne .done
+    jne .dir
     xor byte [mbtn], 1
     call draw_btn
     jmp .done
 
-.move:
-    call move_cursor
+.dir:
+    ; 只有方向键才继续
+    cmp ah, 0x48
+    je .ok
+    cmp ah, 0x50
+    je .ok
+    cmp ah, 0x4B
+    je .ok
+    cmp ah, 0x4D
+    je .ok
+    jmp .done
+
+.ok:
+    call hide_if_drawn       ; 先在旧位置擦掉光标（坐标还是旧的！）
+    cmp ah, 0x48             ; 上
+    jne .n1
+    sub word [my], 8
+    jmp .apply
+.n1:
+    cmp ah, 0x50             ; 下
+    jne .n2
+    add word [my], 8
+    jmp .apply
+.n2:
+    cmp ah, 0x4B             ; 左
+    jne .n3
+    sub word [mx], 8
+    jmp .apply
+.n3:
+    add word [mx], 8         ; 右
+.apply:
+    call clamp_cursor
+    call cursor_draw
 .done:
     ret
 
@@ -911,6 +922,8 @@ mouse_packet:
     test al, 0xC0             ; 溢出位有效就丢包
     jnz .skip
 
+    call hide_if_drawn        ; 先在旧位置擦掉光标（坐标还是旧的！）
+
     mov al, [mpkt+1]
     cbw                       ; AX = 有符号 X 增量
     add [mx], ax
@@ -924,18 +937,17 @@ mouse_packet:
     mov [mbtn], al
     call draw_btn
 
-    call move_cursor
+    call clamp_cursor
+    call cursor_draw
 .skip:
     ret
 
-; 在新位置重画光标：必要时先擦旧的，保证"擦除/重画"严格配对
-move_cursor:
+; 光标画在屏幕上时才擦除
+hide_if_drawn:
     cmp byte [mdrawn], 0
-    jz .first
+    jz .skip
     call cursor_hide
-.first:
-    call clamp_cursor
-    call cursor_draw
+.skip:
     ret
 
 ; 状态栏右侧的三个按钮指示灯（左/中/右）
@@ -1029,6 +1041,8 @@ cursor_draw:
     ret
 
 ; 擦光标：把 cursav 写回屏幕
+; 注意：保存时是 13 行、每行 8 字节（行间隔 SCRW），
+; 恢复必须逐行写，不能 rep movsb 连续写——否则背景被糊成横条
 cursor_hide:
     push ax
     push cx
@@ -1043,9 +1057,21 @@ cursor_hide:
     add ax, [mx]
     mov di, ax
     mov si, cursav
-    mov cx, CUR_H * 8
-    cld
-    rep movsb
+    mov cx, CUR_H
+.row:
+    push cx
+    push di
+    mov cx, 8
+.p:
+    mov al, [si]
+    mov [es:di], al
+    inc si
+    inc di
+    loop .p
+    pop di
+    add di, SCRW
+    pop cx
+    loop .row
     mov byte [mdrawn], 0
     pop di
     pop si

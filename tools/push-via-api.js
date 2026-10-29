@@ -18,7 +18,8 @@ function api(args, input) {
   }
   let out;
   try {
-    out = execFileSync('gh', ['api'].concat(args), opts);
+    const ghPath = fs.existsSync('C:/Program Files/GitHub CLI/gh.exe') ? 'C:/Program Files/GitHub CLI/gh.exe' : 'gh';
+    out = execFileSync(ghPath, ['api'].concat(args), opts);
   } catch (e) {
     console.error('API 调用失败:', ['api'].concat(args).join(' '));
     console.error(String(e.stderr || e.message).slice(0, 600));
