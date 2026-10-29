@@ -27,6 +27,7 @@ C_RED = 4
 C_GRAY = 7
 C_DKGRAY = 8
 C_LCYAN = 11
+C_GREEN = 10
 C_YELLOW = 14
 C_WHITE = 15
 
@@ -54,6 +55,11 @@ start:
     mov word [my], 92
     call cursor_draw
 
+    ; 应用界面（启动器）
+    mov byte [mode], 0
+    call draw_appbar
+    call draw_app
+
     mov si, msg_boot
     call sc_puts
 
@@ -61,6 +67,18 @@ main_loop:
     call mouse_poll
     call key_poll
     call draw_clock
+    cmp byte [clicked], 0
+    je .noclick
+    mov byte [clicked], 0
+    call click_dispatch
+.noclick:
+    cmp byte [mode], 1
+    jne .nopaint
+    mov al, [prevbtn]
+    test al, 1
+    jz .nopaint
+    call paint_stroke
+.nopaint:
     hlt
     jmp main_loop
 
@@ -247,48 +265,705 @@ draw_window:
     mov dx, WIN_H - 2
     call fill_rect
 
-    call draw_window_text
     ret
 
-; 窗口里的中文内容
-draw_window_text:
+; ================================================================
+;  应用框架：启动器 / 画板 / 计算器 / 关于
+; ================================================================
+
+; 应用标题栏：名字 + 退出按钮
+draw_appbar:
+    mov ax, 0xA000
+    mov es, ax
+    mov di, (WIN_Y + 2) * SCRW + WIN_X + 2
+    mov al, C_NAVY
+    mov cx, WIN_W - 4
+    mov dx, 20
+    call fill_rect
+
+    ; 应用名
+    mov byte [fgcol], C_WHITE
+    mov byte [bgcol], C_NAVY
+    mov word [curx], WIN_X + 8
+    mov word [cury], WIN_Y + 4
+    mov si, msg_app0
+    cmp byte [mode], 1
+    jne .c1
+    mov si, msg_app1
+.c1:
+    cmp byte [mode], 2
+    jne .c2
+    mov si, msg_app2
+.c2:
+    cmp byte [mode], 3
+    jne .c3
+    mov si, msg_app3
+.c3:
+    call draw_text
+
+    ; 退出按钮（启动器不显示）
+    cmp byte [mode], 0
+    je .noexit
+    mov word [btnx], 262
+    mov word [btny], 27
+    mov word [btnw], 40
+    mov word [btnh], 18
+    mov word [lblw], 32
+    mov si, msg_exit
+    mov byte [fgcol], C_BLACK
+    mov byte [bgcol], C_GRAY
+    call draw_button
+.noexit:
+    ret
+
+; 按当前模式画应用内容
+draw_app:
+    cmp byte [mode], 1
+    je draw_paint
+    cmp byte [mode], 2
+    je draw_calc
+    cmp byte [mode], 3
+    je draw_about
+    jmp draw_launcher
+
+; ---------- 启动器：三个图标 ----------
+draw_launcher:
+    ; 图标 1：画板（黄色）
+    mov word [btnx], 24
+    mov word [btny], 80
+    mov word [btnw], 84
+    mov word [btnh], 56
+    mov word [lblw], 32
+    mov si, msg_app1
+    mov byte [fgcol], C_WHITE
+    mov byte [bgcol], C_NAVY
+    mov byte [iccol], C_YELLOW
+    call draw_icon
+    ; 图标 2：计算器（青色）
+    mov word [btnx], 116
+    mov word [lblw], 48
+    mov si, msg_app2
+    mov byte [bgcol], C_NAVY
+    mov byte [iccol], C_LCYAN
+    call draw_icon
+    ; 图标 3：关于（白色）
+    mov word [btnx], 208
+    mov word [lblw], 32
+    mov si, msg_app3
+    mov byte [iccol], C_WHITE
+    call draw_icon
+    ret
+
+; 图标 = 凸起框 + 顶部色条 + 居中标签（颜色由调用前的 al 给出）
+draw_icon:
+    push ax
+    call draw_button
+    mov ax, 0xA000
+    mov es, ax
+    mov ax, [btny]
+    mov dx, SCRW
+    mul dx
+    add ax, [btnx]
+    add ax, 6
+    mov di, ax
+    mov al, [iccol]
+    mov cx, [btnw]
+    sub cx, 12
+    mov dx, 5
+    call fill_rect
+    pop ax
+    ret
+
+; ---------- 画板 ----------
+draw_paint:
+    mov ax, 0xA000
+    mov es, ax
+    ; 画布（黑）
+    mov di, 65 * SCRW + 12
+    mov al, C_BLACK
+    mov cx, 294
+    mov dx, 100
+    call fill_rect
+    ; 四个色板：白 黄 青 绿
+    mov di, 49 * SCRW + 14
+    mov al, C_WHITE
+    mov cx, 14
+    mov dx, 14
+    call fill_rect
+    mov di, 49 * SCRW + 32
+    mov al, C_YELLOW
+    call fill_rect
+    mov di, 49 * SCRW + 50
+    mov al, C_LCYAN
+    call fill_rect
+    mov di, 49 * SCRW + 68
+    mov al, C_GREEN
+    call fill_rect
+    ; 清除按钮
+    mov word [btnx], 180
+    mov word [btny], 48
+    mov word [btnw], 48
+    mov word [btnh], 16
+    mov word [lblw], 32
+    mov si, msg_clear
+    mov byte [fgcol], C_BLACK
+    mov byte [bgcol], C_GRAY
+    call draw_button
+    ret
+
+; 鼠标按住时在画布上涂 2x2 色块
+paint_stroke:
+    mov ax, [mx]
+    cmp ax, 13
+    jl .no
+    cmp ax, 303
+    jg .no
+    mov ax, [my]
+    cmp ax, 66
+    jl .no
+    cmp ax, 162
+    jg .no
+    mov ax, 0xA000
+    mov es, ax
+    mov ax, [my]
+    mov dx, SCRW
+    mul dx
+    add ax, [mx]
+    mov di, ax
+    mov al, [paintcol]
+    mov [es:di], al
+    inc di
+    mov [es:di], al
+    add di, SCRW - 1
+    mov [es:di], al
+    inc di
+    mov [es:di], al
+.no:
+    ret
+
+; ---------- 计算器 ----------
+draw_calc:
+    mov ax, 0xA000
+    mov es, ax
+    ; 显示框（白底）
+    mov di, 50 * SCRW + 116
+    mov al, C_WHITE
+    mov cx, 184
+    mov dx, 18
+    call fill_rect
+    ; 4x4 按键
+    mov byte [rowb], 0
+.grow:
+    mov byte [colb], 0
+.gcol:
+    call calc_btn_pos
+    mov word [btnw], 44
+    mov word [btnh], 18
+    mov word [lblw], 8
+    mov al, [rowb]
+    shl al, 2
+    add al, [colb]
+    mov ah, 0
+    mov si, gridlbl
+    add si, ax
+    mov al, [si]
+    mov [tmpstr], al        ; 单字符标签（gridlbl 没有逐键 0 结尾）
+    mov si, tmpstr
+    mov byte [fgcol], C_BLACK
+    mov byte [bgcol], C_GRAY
+    call draw_button
+    add byte [colb], 1
+    cmp byte [colb], 4
+    jl .gcol
+    add byte [rowb], 1
+    cmp byte [rowb], 4
+    jl .grow
+    call draw_calc_display
+    ret
+
+; 第 rowb 行 colb 列按键的位置
+calc_btn_pos:
+    mov al, [colb]
+    mov bl, 46
+    mul bl
+    add ax, 116
+    mov [btnx], ax
+    mov al, [rowb]
+    mov bl, 22
+    mul bl
+    add ax, 72
+    mov [btny], ax
+    ret
+
+; 刷新显示框（白底黑字，右对齐）
+draw_calc_display:
+    push ax
+    push cx
+    push dx
+    push si
+    mov ax, 0xA000
+    mov es, ax
+    mov di, 50 * SCRW + 116
+    mov al, C_WHITE
+    mov cx, 184
+    mov dx, 18
+    call fill_rect
+    mov al, [calcenter]
+    test al, al
+    jz .acc
+    mov ax, [calccur]
+    jmp .have
+.acc:
+    mov ax, [calcacc]
+.have:
+    call dec_conv
+    mov ax, cx
+    shl ax, 3
+    mov dx, 292
+    sub dx, ax
+    mov [curx], dx
+    mov word [cury], 51
+    mov byte [fgcol], C_BLACK
+    mov byte [bgcol], C_WHITE
+    call dec_flush
+    pop si
+    pop dx
+    pop cx
+    pop ax
+    ret
+
+; 按键分发（AL = 键字符）
+calc_key:
+    mov [tmpb], al
+    cmp al, '0'
+    jb .notdigit
+    cmp al, '9'
+    ja .notdigit
+    mov al, [tmpb]
+    sub al, 48
+    mov [tmpb], al
+    cmp byte [calcenter], 0
+    jne .cont
+    mov ah, 0
+    mov [calccur], ax
+    mov byte [calcenter], 1
+    jmp .draw
+.cont:
+    cmp word [calccur], 6553
+    ja .draw              ; 太大就忽略
+    mov bl, 10
+    mov ax, [calccur]
+    mul bl
+    mov bl, [tmpb]
+    mov bh, 0
+    add ax, bx
+    mov [calccur], ax
+.draw:
+    call draw_calc_display
+    ret
+.notdigit:
+    mov al, [tmpb]
+    cmp al, 'C'
+    jne .ne
+    mov word [calcacc], 0
+    mov word [calccur], 0
+    mov byte [calcop], 0
+    mov byte [calcenter], 0
+    jmp .draw
+.ne:
+    cmp al, '='
+    jne .ops
+    call calc_apply
+    mov byte [calcop], 0
+    mov byte [calcenter], 0
+    mov ax, [calcacc]
+    mov [calccur], ax
+    jmp .draw
+.ops:
+    cmp byte [calcop], 0
+    je .first
+    cmp byte [calcenter], 0
+    je .setop
+    call calc_apply
+    jmp .setop
+.first:
+    mov ax, [calccur]
+    mov [calcacc], ax
+.setop:
+    mov al, [tmpb]
+    cmp al, '+'
+    jne .o2
+    mov byte [calcop], 1
+    jmp .done
+.o2:
+    cmp al, '-'
+    jne .o3
+    mov byte [calcop], 2
+    jmp .done
+.o3:
+    cmp al, '*'
+    jne .o4
+    mov byte [calcop], 3
+    jmp .done
+.o4:
+    mov byte [calcop], 4
+.done:
+    mov byte [calcenter], 0
+    call draw_calc_display
+    ret
+
+; acc = apply(calcop, acc, cur)
+calc_apply:
+    mov ax, [calcacc]
+    mov bx, [calccur]
+    cmp byte [calcop], 1
+    je .add
+    cmp byte [calcop], 2
+    je .sub
+    cmp byte [calcop], 3
+    je .mul
+    cmp byte [calcop], 4
+    je .dv
+    ret
+.add:
+    add ax, bx
+    jmp .save
+.sub:
+    sub ax, bx
+    jmp .save
+.mul:
+    mul bx
+    jmp .save
+.dv:
+    cmp bx, 0
+    jne .dvok
+    xor ax, ax
+    jmp .save
+.dvok:
+    xor dx, dx
+    div bx
+.save:
+    mov [calcacc], ax
+    ret
+
+; ---------- 关于 ----------
+draw_about:
     mov byte [fgcol], C_GRAY
     mov byte [bgcol], C_BLACK
-
     mov word [curx], WIN_X + 10
-    mov word [cury], WIN_Y + 8
+    mov word [cury], WIN_Y + 26
     mov si, txt_head
     call draw_text
-
-    mov word [curx], WIN_X + 10
-    mov word [cury], WIN_Y + 28
+    mov word [cury], WIN_Y + 42
     mov si, txt_1
     call draw_text
-
-    mov word [curx], WIN_X + 10
-    mov word [cury], WIN_Y + 46
+    mov word [cury], WIN_Y + 58
     mov si, txt_2
     call draw_text
-
-    mov word [curx], WIN_X + 10
-    mov word [cury], WIN_Y + 68
+    mov word [cury], WIN_Y + 74
     mov si, txt_3
     call draw_text
-
-    mov word [curx], WIN_X + 10
-    mov word [cury], WIN_Y + 86
+    mov word [cury], WIN_Y + 90
     mov si, txt_4
     call draw_text
-
-    mov word [curx], WIN_X + 10
-    mov word [cury], WIN_Y + 104
+    mov word [cury], WIN_Y + 106
     mov si, txt_5
     call draw_text
-
-    mov word [curx], WIN_X + 10
     mov word [cury], WIN_Y + 122
     mov si, txt_6
     call draw_text
+    ret
+
+; ---------- 通用绘制 ----------
+; 凸起按钮：btnx/btny/btnw/btnh + si=标签 + lblw + fgcol/bgcol
+draw_button:
+    push ax
+    push cx
+    push dx
+    push di
+    push si
+    mov ax, 0xA000
+    mov es, ax
+    mov ax, [btny]
+    mov dx, SCRW
+    mul dx
+    add ax, [btnx]
+    mov di, ax
+    mov al, [bgcol]
+    mov cx, [btnw]
+    mov dx, [btnh]
+    call fill_rect
+    ; 上/左 亮边
+    mov di, [btny]
+    mov dx, 1
+    mov ax, [btny]
+    mov dx, SCRW
+    mul dx
+    add ax, [btnx]
+    mov di, ax
+    mov al, C_WHITE
+    mov cx, [btnw]
+    mov dx, 1
+    call fill_rect
+    mov cx, 1
+    mov dx, [btnh]
+    call fill_rect
+    ; 下/右 暗边
+    mov ax, [btny]
+    add ax, [btnh]
+    dec ax
+    mov dx, SCRW
+    mul dx
+    add ax, [btnx]
+    mov di, ax
+    mov al, C_DKGRAY
+    mov cx, [btnw]
+    mov dx, 1
+    call fill_rect
+    mov ax, [btny]
+    mov dx, SCRW
+    mul dx
+    add ax, [btnx]
+    add ax, [btnw]
+    dec ax
+    mov di, ax
+    mov cx, 1
+    mov dx, [btnh]
+    call fill_rect
+    ; 居中标签
+    mov ax, [btnw]
+    sub ax, [lblw]
+    shr ax, 1
+    add ax, [btnx]
+    mov [curx], ax
+    mov ax, [btnh]
+    sub ax, 16
+    shr ax, 1
+    add ax, [btny]
+    mov [cury], ax
+    call draw_text
+    pop si
+    pop di
+    pop dx
+    pop cx
+    pop ax
+    ret
+
+; 鼠标按下沿分发：clickx/clicky 已就绪
+click_dispatch:
+    ; 非启动器：退出按钮
+    cmp byte [mode], 0
+    je .launcher
+    mov ax, [clickx]
+    mov dx, [clicky]
+    mov word [btnx], 262
+    mov word [btny], 27
+    mov word [btnw], 40
+    mov word [btnh], 18
+    call pt_in
+    jnc .notexit
+    call hide_if_drawn
+    mov byte [mode], 0
+    call draw_window
+    call draw_appbar
+    call draw_app
+    call cursor_draw
+    ret
+.notexit:
+.launcher:
+    cmp byte [mode], 0
+    jne .paint
+    ; 图标 1：画板
+    mov ax, [clickx]
+    mov dx, [clicky]
+    mov word [btnx], 24
+    mov word [btny], 80
+    mov word [btnw], 84
+    mov word [btnh], 56
+    call pt_in
+    jnc .icon2
+    call hide_if_drawn
+    mov byte [mode], 1
+    call draw_window
+    call draw_appbar
+    call draw_app
+    call cursor_draw
+    ret
+.icon2:
+    mov ax, [clickx]
+    mov dx, [clicky]
+    mov word [btnx], 116
+    call pt_in
+    jnc .icon3
+    call hide_if_drawn
+    mov byte [mode], 2
+    call draw_window
+    call draw_appbar
+    call draw_app
+    call cursor_draw
+    ret
+.icon3:
+    mov ax, [clickx]
+    mov dx, [clicky]
+    mov word [btnx], 208
+    call pt_in
+    jnc .done
+    call hide_if_drawn
+    mov byte [mode], 3
+    call draw_window
+    call draw_appbar
+    call draw_app
+    call cursor_draw
+    ret
+.paint:
+    cmp byte [mode], 1
+    jne .calc
+    ; 四个色板
+    mov ax, [clicky]
+    cmp ax, 49
+    jl .clearchk
+    cmp ax, 63
+    jg .clearchk
+    mov ax, [clickx]
+    cmp ax, 14
+    jl .clearchk
+    cmp ax, 82
+    jg .clearchk
+    ; x 14..28→白 32..46→黄 50..64→青 68..82→绿
+    cmp ax, 30
+    jl .sw1
+    cmp ax, 48
+    jl .sw2
+    cmp ax, 66
+    jl .sw3
+    mov byte [paintcol], C_GREEN
+    jmp .done
+.sw1:
+    mov byte [paintcol], C_WHITE
+    jmp .done
+.sw2:
+    mov byte [paintcol], C_YELLOW
+    jmp .done
+.sw3:
+    mov byte [paintcol], C_LCYAN
+    jmp .done
+.clearchk:
+    ; 清除按钮
+    mov ax, [clickx]
+    mov dx, [clicky]
+    mov word [btnx], 180
+    mov word [btny], 48
+    mov word [btnw], 48
+    mov word [btnh], 16
+    call pt_in
+    jnc .done
+    mov ax, 0xA000
+    mov es, ax
+    mov di, 65 * SCRW + 12
+    mov al, C_BLACK
+    mov cx, 294
+    mov dx, 100
+    call fill_rect
+    jmp .done
+.calc:
+    cmp byte [mode], 2
+    jne .done
+    ; 网格命中
+    mov ax, [clickx]
+    cmp ax, 116
+    jl .done
+    cmp ax, 300
+    jg .done
+    mov ax, [clicky]
+    cmp ax, 72
+    jl .done
+    cmp ax, 156
+    jg .done
+    mov ax, [clickx]
+    sub ax, 116
+    mov bl, 46
+    div bl
+    mov cl, al              ; 列
+    mov ax, [clicky]
+    sub ax, 72
+    mov bl, 22
+    div bl                  ; AL=行
+    mov bl, 4
+    mul bl
+    add al, cl
+    mov ah, 0
+    mov si, gridlbl
+    add si, ax
+    mov al, [si]
+    call calc_key
+.done:
+    ret
+
+; 点是否在矩形内：AX=x DX=y vs btnx/btny/btnw/btnh → CF=1 在内
+pt_in:
+    cmp ax, [btnx]
+    jl .no
+    mov bx, [btnx]
+    add bx, [btnw]
+    cmp ax, bx
+    jge .no
+    cmp dx, [btny]
+    jl .no
+    mov bx, [btny]
+    add bx, [btnh]
+    cmp dx, bx
+    jge .no
+    stc
+    ret
+.no:
+    clc
+    ret
+
+; AX 转 5 位十进制：CX=有效位数 SI=首字符
+dec_conv:
+    push ax
+    push bx
+    push dx
+    mov bx, 10
+    mov si, decbuf + 4
+    mov cx, 5
+.lp:
+    xor dx, dx
+    div bx
+    add dl, 48
+    mov [si], dl
+    dec si
+    dec cx
+    jnz .lp
+    mov si, decbuf
+    mov cx, 5
+.sk:
+    cmp byte [si], 48
+    jne .e
+    inc si
+    dec cx
+    jnz .sk
+    mov si, decbuf + 4
+    mov cx, 1
+.e:
+    pop dx
+    pop bx
+    pop ax
+    ret
+
+; 从 curx/cury 打印 SI 起 CX 个字符
+dec_flush:
+    push ax
+    push cx
+    push si
+.l:
+    mov al, [si]
+    call put_char
+    inc si
+    loop .l
+    pop si
+    pop cx
+    pop ax
     ret
 
 ; 状态栏
@@ -808,7 +1483,7 @@ mouse_init:
     call aux_send
     mov al, 0xF3
     call aux_send
-    mov al, 10
+    mov al, 60
     call aux_send
     mov al, 0xF4
     call aux_send
@@ -854,6 +1529,18 @@ key_poll:
     mov ah, 0x00
     int 0x16                 ; AH=扫描码
 
+    cmp ah, 0x01             ; ESC：退出应用回启动器
+    jne .kesc
+    cmp byte [mode], 0
+    je .done
+    call hide_if_drawn
+    mov byte [mode], 0
+    call draw_window
+    call draw_appbar
+    call draw_app
+    call cursor_draw
+    jmp .done
+.kesc:
     cmp ah, 0x39             ; 空格 = 左键
     jne .dir
     xor byte [mbtn], 1
@@ -918,6 +1605,21 @@ clamp_cursor:
 
 ; 处理一个 3 字节包：[0]=状态 [1]=X 增量 [2]=Y 增量
 mouse_packet:
+    ; 按下沿检测：现在按着，上一帧没按
+    mov al, [mpkt]
+    and al, 7
+    mov cl, [prevbtn]
+    mov [prevbtn], al
+    test al, 1
+    jz .noedge
+    test cl, 1
+    jnz .noedge
+    mov ax, [mx]
+    mov [clickx], ax
+    mov ax, [my]
+    mov [clicky], ax
+    mov byte [clicked], 1
+.noedge:
     mov al, [mpkt]
     test al, 0xC0             ; 溢出位有效就丢包
     jnz .skip
@@ -1105,6 +1807,36 @@ mbtn:      db 0
 mphase:    dw 0
 mpkt:      db 0, 0, 0
 mdrawn:    db 0                      ; 光标当前是否画在屏幕上
+
+; ---------- 应用 ----------
+mode:      db 0                      ; 0=启动器 1=画板 2=计算器 3=关于
+prevbtn:   db 0                      ; 上一帧鼠标左键状态（按下沿检测）
+clicked:   db 0                      ; 本帧有按下沿
+clickx:    dw 0
+clicky:    dw 0
+paintcol:  db C_YELLOW
+calcacc:   dw 0
+calccur:   dw 0
+calcop:    db 0                      ; 0 无 1 + 2 - 3 * 4 /
+calcenter: db 0
+btnx:      dw 0
+btny:      dw 0
+btnw:      dw 0
+btnh:      dw 0
+lblw:      dw 0
+iccol:     db C_YELLOW
+colb:      db 0
+rowb:      db 0
+tmpb:      db 0
+tmpstr:    db 0, 0
+decbuf:    db 0, 0, 0, 0, 0
+gridlbl:   db "789+456-123*0=C/"
+msg_app0:  db "Lumen OS", 0
+msg_app1:  db "画板", 0
+msg_app2:  db "计算器", 0
+msg_app3:  db "关于", 0
+msg_exit:  db "退出", 0
+msg_clear: db "清除", 0
 cmdbyte:   db 0
 cursav:    resb CUR_H * 8      ; 光标下面的背景
 
