@@ -814,16 +814,24 @@ mouse_init:
     call aux_send
     ret
 
-; 主循环里轮询：有鼠标数据就按字节收，凑满 3 字节处理一包
+; 主循环里轮询：只收鼠标字节（bit5），凑满 3 字节处理一包
+; 键盘字节（bit5=0）不碰，留给 BIOS 的 IRQ1 处理
 mouse_poll:
-    mov cx, 8                 ; 一帧最多消化 8 字节
+    mov cx, 16                ; 一帧最多消化 16 字节
 .loop:
     mov dx, 0x64
     in al, dx
     test al, 1
-    jz .done
+    jz .done                  ; 输出缓冲空
+    test al, 0x20
+    jz .done                  ; bit5=0：是键盘字节，留给 BIOS
     mov dx, 0x60
     in al, dx
+    cmp word [mphase], 0
+    jne .store
+    test al, 0x08             ; 包首字节的 bit3 恒为 1，用来同步
+    jz .done                  ; 不同步就丢弃，等真正的包首
+.store:
     mov bx, [mphase]
     add bx, mpkt
     mov [bx], al
@@ -873,9 +881,7 @@ key_poll:
     jmp .done
 
 .move:
-    call cursor_hide
-    call clamp_cursor
-    call cursor_draw
+    call move_cursor
 .done:
     ret
 
@@ -904,7 +910,6 @@ mouse_packet:
     mov al, [mpkt]
     test al, 0xC0             ; 溢出位有效就丢包
     jnz .skip
-    call cursor_hide          ; 先在旧位置擦掉光标
 
     mov al, [mpkt+1]
     cbw                       ; AX = 有符号 X 增量
@@ -913,16 +918,24 @@ mouse_packet:
     cbw
     sub [my], ax              ; PS/2 的 Y 正方向朝上，屏幕朝下
 
-    call clamp_cursor
-
     ; 按钮状态 → 状态栏指示灯
     mov al, [mpkt]
     and al, 7
     mov [mbtn], al
     call draw_btn
 
-    call cursor_draw
+    call move_cursor
 .skip:
+    ret
+
+; 在新位置重画光标：必要时先擦旧的，保证"擦除/重画"严格配对
+move_cursor:
+    cmp byte [mdrawn], 0
+    jz .first
+    call cursor_hide
+.first:
+    call clamp_cursor
+    call cursor_draw
     ret
 
 ; 状态栏右侧的三个按钮指示灯（左/中/右）
@@ -1007,6 +1020,7 @@ cursor_draw:
     add si, 2
     pop cx
     loop .row
+    mov byte [mdrawn], 1
     pop di
     pop si
     pop dx
@@ -1032,6 +1046,7 @@ cursor_hide:
     mov cx, CUR_H * 8
     cld
     rep movsb
+    mov byte [mdrawn], 0
     pop di
     pop si
     pop dx
@@ -1063,6 +1078,7 @@ my:        dw 92
 mbtn:      db 0
 mphase:    dw 0
 mpkt:      db 0, 0, 0
+mdrawn:    db 0                      ; 光标当前是否画在屏幕上
 cmdbyte:   db 0
 cursav:    resb CUR_H * 8      ; 光标下面的背景
 

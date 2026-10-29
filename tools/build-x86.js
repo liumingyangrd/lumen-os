@@ -87,7 +87,12 @@ function addMbrSignature(sector, payloadSectors) {
 const kernelSrc = read('src/x86/kgfx.s');
 
 /* 字库：先跑 fontgen.py，按当前源码里实际用到的字符重新生成 */
-require('child_process').execFileSync('python', [path.join(ROOT, 'tools', 'fontgen.py')], { stdio: 'inherit' });
+try {
+  require('child_process').execFileSync('python', [path.join(ROOT, 'tools', 'fontgen.py')], { stdio: 'inherit' });
+} catch (e) {
+  if (!fs.existsSync(path.join(DIST, 'font.bin'))) throw e;
+  console.log('  [警告] fontgen 失败（缺 PIL？），沿用已有的 dist/font.bin');
+}
 const font = fs.readFileSync(path.join(DIST, 'font.bin'));
 const asciiCount = font.readUInt16LE(0);
 const cjkCount = font.readUInt16LE(2);
